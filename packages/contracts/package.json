@@ -1,0 +1,74 @@
+{
+  "name": "@sih/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared JSON Schema (Draft 2020-12) and TypeScript types for SIH wire contracts: triggers, journal events, sealed artifacts, gates, hashes, and saved bundles.",
+  "exports": {
+    "./schemas": {
+      "types": "./src/schemas/registry.ts",
+      "default": "./src/schemas/registry.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./parse": {
+      "types": "./src/parse.ts",
+      "default": "./src/parse.ts"
+    },
+    "./hashes": {
+      "types": "./src/hashes.ts",
+      "default": "./src/hashes.ts"
+    },
+    "./canonical": {
+      "types": "./src/canonical.ts",
+      "default": "./src/canonical.ts"
+    },
+    "./journal": {
+      "types": "./src/journal.ts",
+      "default": "./src/journal.ts"
+    },
+    "./transitions": {
+      "types": "./src/transitions.ts",
+      "default": "./src/transitions.ts"
+    },
+    "./redaction": {
+      "types": "./src/redaction.ts",
+      "default": "./src/redaction.ts"
+    },
+    "./freshness": {
+      "types": "./src/freshness.ts",
+      "default": "./src/freshness.ts"
+    },
+    "./paths": {
+      "types": "./src/paths.ts",
+      "default": "./src/paths.ts"
+    },
+    "./saved-bundle": {
+      "types": "./src/saved-bundle.ts",
+      "default": "./src/saved-bundle.ts"
+    },
+    "./errors": {
+      "types": "./src/errors.ts",
+      "default": "./src/errors.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun run test",
+    "fixtures": "bun run scripts/generate-fixtures.ts"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "canonicalize": "4.0.0",
+    "json-schema-to-ts": "3.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "fast-check": "4.9.0",
+    "typescript": "6.0.3"
+  }
+}

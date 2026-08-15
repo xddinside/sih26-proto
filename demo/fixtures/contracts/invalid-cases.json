@@ -1,0 +1,66 @@
+[
+  {
+    "name": "bad-sequence",
+    "expected_code": "BAD_SEQUENCE"
+  },
+  {
+    "name": "duplicate-idempotency",
+    "expected_code": "DUPLICATE_TRANSITION"
+  },
+  {
+    "name": "illegal-run-transition",
+    "expected_code": "ILLEGAL_TRANSITION"
+  },
+  {
+    "name": "illegal-stage-transition",
+    "expected_code": "ILLEGAL_TRANSITION"
+  },
+  {
+    "name": "stale-schema",
+    "expected_code": "STALE_SCHEMA"
+  },
+  {
+    "name": "unknown-schema",
+    "expected_code": "UNKNOWN_SCHEMA"
+  },
+  {
+    "name": "redaction-mismatch",
+    "expected_code": "REDACTION_FAILURE"
+  },
+  {
+    "name": "missing-artifact",
+    "expected_code": "MISSING_ARTIFACT"
+  },
+  {
+    "name": "changed-content",
+    "expected_code": "CHANGED_CONTENT"
+  },
+  {
+    "name": "changed-payload",
+    "expected_code": "CHANGED_CONTENT"
+  },
+  {
+    "name": "bad-path",
+    "expected_code": "INVALID_PATH"
+  },
+  {
+    "name": "stale-evidence",
+    "expected_code": "STALE_DATA"
+  },
+  {
+    "name": "unlisted-file",
+    "expected_code": "MALFORMED_CONTRACT"
+  },
+  {
+    "name": "artifact-context-mismatch",
+    "expected_code": "MALFORMED_CONTRACT"
+  },
+  {
+    "name": "gate-evidence-missing",
+    "expected_code": "MISSING_ARTIFACT"
+  },
+  {
+    "name": "report-receipt-missing",
+    "expected_code": "MISSING_ARTIFACT"
+  }
+]

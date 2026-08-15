@@ -1,0 +1,96 @@
+{
+  "format_version": "1.0",
+  "capture_time": "2026-08-16T12:00:00Z",
+  "incident_ids": [
+    {
+      "incident_id": "inc-demo-payment-1",
+      "final_sequence": 44
+    },
+    {
+      "incident_id": "inc-demo-payment-2",
+      "final_sequence": 25
+    }
+  ],
+  "files": {
+    "artifacts/sha256/07fd0f49c85d5029c601599ecd1dc6c355ac8811b213836a642e7ff5e67d75ef.json": {
+      "sha256": "sha256:ae4deac6def85aca92af8f173a6d487451182c963e49f5012513fc70951a5727",
+      "size": 1038
+    },
+    "artifacts/sha256/1a18e1bf8f429aa4d9b56f92c904603e1c63cc53afad68ad08931569e75b973a.json": {
+      "sha256": "sha256:8dbeeda1d76836e39da9334d2edb88c9c080d30bc9547c5dea47827b0e05bb39",
+      "size": 872
+    },
+    "artifacts/sha256/20c99d80a3334d1b1fbc416a98d2f90a30c7580960058e54cfc3959865d7ec9a.json": {
+      "sha256": "sha256:c5fb407d719896acdfa77667201399c1579684e30a2ce15bf1fb187c92ff2c17",
+      "size": 872
+    },
+    "artifacts/sha256/2d23b17e52775fdf1234439974210feeb78440d2918525c0ff02f8e1eb4f2595.json": {
+      "sha256": "sha256:e98a8caf9bdca45737a803a1ed6299bffc4f0c3b6b62c546910a4db2ae1a3e7a",
+      "size": 4392
+    },
+    "artifacts/sha256/34577eec859b393f8030f31d531ce6b9411fcd5e9e4266d069e45be16051701d.json": {
+      "sha256": "sha256:7b1955be0c98444ce0e05ccc0bc49d16cc36042d662ae8f5075810050697952b",
+      "size": 2162
+    },
+    "artifacts/sha256/38a69977cba497acd2b6661ec0d21adc316886de1a44e064ba00c640a3cf57f1.json": {
+      "sha256": "sha256:cce3a9f7bbb06c725e45384431fa432599254ce6cadd68a0c986b1551001d800",
+      "size": 2159
+    },
+    "artifacts/sha256/4d4ee3d8370445e6542b04a826f26d30a5d3ef89407c71d4d2b19f9a23040d1a.json": {
+      "sha256": "sha256:008290e4738352b0c706a54d41235dec2b68445adcf653f3cf3d85c3e4b70f81",
+      "size": 988
+    },
+    "artifacts/sha256/6f56503ff1247f02f3d9f929ef3ab1956338797b0efa7ec4e08eef64acc75dac.json": {
+      "sha256": "sha256:8feb6da277af84c927e64dd25592327f0f6dd194186e60edb46bf57ac35b1bbc",
+      "size": 1760
+    },
+    "artifacts/sha256/81a7303926e6faa9220b0d8c4617e9764a70f6bdf65db6a11d9aa686d92bfdaa.json": {
+      "sha256": "sha256:595b8ea5469dcabfc43455209092a705f8d0320fe8b723f7f495aa78c90cad10",
+      "size": 1112
+    },
+    "artifacts/sha256/963462d088d47abba36a6c1436befd7ab59939d12ad32fbbca976f2267a5de42.json": {
+      "sha256": "sha256:fc21da3cf5853b45c87dc96fe4541b95fe68668ef8898c372328417146357422",
+      "size": 1693
+    },
+    "artifacts/sha256/b4ef11c8c447ce72add984319d0d052be0a05f316d4b20f777c829594eac06c0.json": {
+      "sha256": "sha256:7e1d5529a61b3f64a14d94927399c15c0418478aafdfce763c894c5dd322bfa0",
+      "size": 1261
+    },
+    "artifacts/sha256/ba9f19a98281a70ffab500f9d1b1e170fedf4c3c66a0e16bb81aa9ff133f9838.json": {
+      "sha256": "sha256:04354e522617ee8fe4dbdbed15c907925422012b2836327baddc7a706197861b",
+      "size": 928
+    },
+    "artifacts/sha256/c3e016734c1b69efe28a253c00e1f008ffbf00851ac2511df955f241a07f974e.json": {
+      "sha256": "sha256:b65e402c52bf316baeb263c06d6ad67ee86203d28239aa232e1b471f56fe8b97",
+      "size": 887
+    },
+    "artifacts/sha256/d2a8e54d4ae23b1c2e55e9a5e703eeed99e795c7b6b55e7385128ea98d98e97d.json": {
+      "sha256": "sha256:59a8ecdea5e68b59fef0a3c02e815dca65e3b989e5ff6c800253c6eddffa0549",
+      "size": 988
+    },
+    "artifacts/sha256/d5f10a44e81936cba4c13aeab767a3721e1e68f8c566620c0b0b34cb109d7798.json": {
+      "sha256": "sha256:eb534a61c2e6a404e4df4cbd1bb18bd769003c3f548bc0283fd6c93e044a6386",
+      "size": 1735
+    },
+    "artifacts/sha256/ec586b981d9d7b576e7411e7793edf0b264229dd4e944d907372771a58839941.json": {
+      "sha256": "sha256:2b9f2adab0d2bef5f748f2b8ffecff8d53c422645c5c83b5aaaaf4940dea24ad",
+      "size": 1693
+    },
+    "artifacts/sha256/f90ed886d43462f3ca5ba042fc8196134bf1be2222c97a63d6d4a78d24c1fb21.json": {
+      "sha256": "sha256:33645c92bcc18c5675e6725dc8fe621a4b212da63df08d2660b01e125803e3d8",
+      "size": 998
+    },
+    "artifacts/sha256/fbec9cdf185ac62953412416dede5b3ad431f8b780dc867aedc67494245480b7.json": {
+      "sha256": "sha256:82e260fc7e24f732a7f347c3ddba933312bc8965867fd6a1de2455d45c70fad2",
+      "size": 4392
+    },
+    "incidents/inc-demo-payment-1/journal.jsonl": {
+      "sha256": "sha256:97e6092f035257c37b8a49ab6c53f4ef512471180bc7ae06f4e7aa47a7c4008c",
+      "size": 23088
+    },
+    "incidents/inc-demo-payment-2/journal.jsonl": {
+      "sha256": "sha256:af9be5e659b1b0aa01d63ff58ba6176dc5a8ee558be34fd4d3948c5ab7da860a",
+      "size": 12576
+    }
+  }
+}
