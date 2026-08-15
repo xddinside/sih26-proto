@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { canonicalizeJsonValue } from "./canonical.js";
 import type { CanonicalError } from "./canonical.js";
 import type { JsonValue } from "./result.js";
-import { err, ok, type Result } from "./result.js";
+import { ok, type Result } from "./result.js";
 import type {
   CandidateHashInput,
   DeliveryKeyInput,

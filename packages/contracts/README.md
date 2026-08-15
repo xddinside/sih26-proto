@@ -123,10 +123,10 @@ bun run fixtures
 
 ## Package-local lock
 
-`bun.lock` is committed package-local and is temporary. Issue #14 merges it
-into the root Bun workspace lock when it scaffolds the monorepo; until then
-this package installs standalone (`bun install` inside `packages/contracts`).
-No root `package.json`, workspace config, or `bun.lock` is created here.
+There is no package-local lockfile. This package installs as a workspace of
+the root Bun monorepo; the root `bun install` resolves it and the single root
+`bun.lock` pins every dependency. Run all installs and checks from the repo
+root.
 
 ## Canonical reports
 
