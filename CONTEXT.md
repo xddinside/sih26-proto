@@ -24,6 +24,10 @@ _Avoid_: Context dump, logs
 A possible root cause ranked by how well it explains the Evidence Set.
 _Avoid_: Root cause, diagnosis, guess
 
+**Fusion Diagnosis**:
+A Diagnose-stage method adapted from the local Fusion Agent Harness. Two or more independent participants inspect the same Incident task and Evidence Set, a Judge compares their outputs, and a Synthesizer produces ranked Hypotheses, contradictions, and missing evidence for the Orchestrator to test.
+_Avoid_: Majority vote, confidence vote, agent debate
+
 **Remediation**:
 A reversible action intended to restore service or remove an Incident. It can change operations, configuration, infrastructure, or code.
 _Avoid_: Fix, patch, self-heal
