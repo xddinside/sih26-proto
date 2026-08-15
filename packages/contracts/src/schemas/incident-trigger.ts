@@ -13,7 +13,6 @@ import {
   SEVERITY,
   SCOPE,
   TIMESTAMP,
-  WINDOW,
 } from "./defs.js";
 
 /** The JSON Schema for a normalized Incident Trigger. */
