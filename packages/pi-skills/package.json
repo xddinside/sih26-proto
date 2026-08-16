@@ -1,0 +1,31 @@
+{
+  "name": "@sih/pi-skills",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "SIH Pi Worker, SIH extension, Fusion diagnosis, repair, review, and test skills. One Worker per Incident attempt hosts one Orchestrator and skill-bound specialist subagents. Deterministic tools, broker receipts, the applicability resolver, and Control Plane gates own pass or fail.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{ts,md,json}\"",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "smoke": "bun run scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@sih/brokers": "workspace:*",
+    "@sih/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@sih/control-plane": "workspace:*",
+    "@types/bun": "1.3.14",
+    "@types/node": "22.20.1",
+    "typescript": "6.0.3"
+  }
+}

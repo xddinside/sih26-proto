@@ -1,0 +1,14 @@
+{
+  "name": "sih-orchestrator",
+  "version": "1.0",
+  "stage": "all",
+  "tool_group": "orchestrator",
+  "access": "Read: broker reads only. Write: none beyond Worker scratch. Network: Control Plane and broker endpoints only. No secrets; no direct production access, credentials, or actions.",
+  "independence": "Is the Orchestrator; never a reviewer, Judge, or Synthesizer; never merges, deploys, or executes a production action; never holds credentials.",
+  "scope": "demo",
+  "retry": {
+    "malformed": "rerun-once-then-needs-human",
+    "timeout": "rerun-once-then-needs-human"
+  },
+  "demo_subset": true
+}

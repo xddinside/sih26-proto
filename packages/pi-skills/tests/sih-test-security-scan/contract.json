@@ -1,0 +1,19 @@
+{
+  "name": "sih-test-security-scan",
+  "version": "1.0",
+  "stage": "verify",
+  "tool_group": "test-run",
+  "access": "Request pinned runs through the broker and read receipts and test output only. The model session receives no secret; where a test needs one, the broker mounts a masked, stage-bound value only into the isolated test process. No project writes and no shell beyond the isolated sandbox; no direct production access, credentials, or actions.",
+  "independence": "One subagent per layer with its own scratch; scanners run through the pinned catalog only.",
+  "scope": "demo",
+  "layer": "T7",
+  "output_schema": {
+    "name": "test-report",
+    "version": "1.0"
+  },
+  "retry": {
+    "malformed": "rerun-once-then-needs-human",
+    "timeout": "rerun-once-then-needs-human"
+  },
+  "demo_subset": true
+}

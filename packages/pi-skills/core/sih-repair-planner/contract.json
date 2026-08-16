@@ -1,0 +1,18 @@
+{
+  "name": "sih-repair-planner",
+  "version": "1.0",
+  "stage": "repair",
+  "tool_group": "repair-planner",
+  "access": "Read: broker reads. Write: scratch only. Network: Control Plane and broker endpoints plus the allow-listed docs proxy. No direct production access, credentials, or actions.",
+  "independence": "Never reviews or tests its own plan; one planner per attempt; the authoring subagent never reviews.",
+  "scope": "demo",
+  "output_schema": {
+    "name": "remediation-proposal",
+    "version": "1.0"
+  },
+  "retry": {
+    "malformed": "rerun-once-then-needs-human",
+    "timeout": "rerun-once-then-needs-human"
+  },
+  "demo_subset": true
+}
