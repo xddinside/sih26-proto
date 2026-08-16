@@ -1,0 +1,118 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reduced verification profile (issue #18 acceptance aid). Runs a minimal slice
+# of the pinned Astronomy Shop — flagd, otel-collector, prometheus,
+# alertmanager, payment, intake-normalizer, control-plane — enough to validate
+# the span_metrics labels, pin the rule, and observe it fire on seeded traffic.
+# It does NOT replace the full overlay; the committed overlay is
+# docker-compose.override.yaml layered on the upstream compose.yaml +
+# compose.observability.yaml.
+#
+# Usage:
+#   OTEL_DEMO_ROOT=/path/to/opentelemetry-demo \
+#   PAYMENT_IMAGE=ghcr.io/open-telemetry/demo:latest-payment \
+#   sg docker -c "docker compose -f demo/compose/docker-compose.reduced.yaml up"
+#
+#   # seeded run (build first):
+#   #   docker build -f <demo-repo>/src/payment/Dockerfile -t payment:seeded <demo-repo>
+#   PAYMENT_IMAGE=payment:seeded ...
+#
+# A charge driver must send gRPC charge requests to payment:50051 (published on
+# localhost:50051) to produce spans.
+
+services:
+  flagd:
+    image: ghcr.io/open-feature/flagd:v0.16.0
+    container_name: flagd
+    restart: unless-stopped
+    command: ["start", "--uri", "file:./etc/flagd/demo.flagd.json"]
+    ports:
+      - "8013:8013"
+    volumes:
+      - ${OTEL_DEMO_ROOT:-./opentelemetry-demo}/src/flagd:/etc/flagd
+
+  otel-collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.157.0
+    container_name: otel-collector
+    restart: unless-stopped
+    command:
+      - --config=/etc/otelcol-reduced.yml
+    volumes:
+      - ./otelcol-reduced.yml:/etc/otelcol-reduced.yml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+  prometheus:
+    image: quay.io/prometheus/prometheus:v3.13.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus-config.yaml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus-config.yaml:/etc/prometheus/prometheus-config.yaml
+      - ../seeds/rule.yml:/etc/prometheus/rules/sih-demo.yml
+    ports:
+      - "9090:9090"
+
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.28.1
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "9093:9093"
+
+  payment:
+    image: ${PAYMENT_IMAGE:-ghcr.io/open-telemetry/demo:latest-payment}
+    container_name: payment
+    restart: unless-stopped
+    ports:
+      - "50051:50051"
+    environment:
+      - IPV6_ENABLED=false
+      - PAYMENT_PORT=50051
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8013
+      - NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=opentelemetry-demo,service.version=3.0.0,service.criticality=critical
+      - OTEL_SERVICE_NAME=payment
+    depends_on:
+      - flagd
+      - otel-collector
+
+  intake-normalizer:
+    build:
+      context: ./intake-normalizer
+      dockerfile: ./Dockerfile
+    container_name: intake-normalizer
+    environment:
+      - PORT=9095
+      - CONTROL_PLANE_URL=http://control-plane:8080
+    ports:
+      - "9095:9095"
+    restart: unless-stopped
+    depends_on:
+      - control-plane
+
+  control-plane:
+    build:
+      context: ./control-plane
+      dockerfile: ./Dockerfile
+    container_name: control-plane
+    environment:
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

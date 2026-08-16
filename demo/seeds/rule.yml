@@ -1,0 +1,39 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pinned Demo Profile detector rule. Alert name, detector_key, and expression
+# follow the settled rule in docs/research/incident-intake.md and
+# docs/research/demo-runs.md. rule_version is pinned so every Incident Trigger
+# carries the rule version (see docs/research/incident-intake.md "Rule changes
+# while an alert is active").
+#
+# Label names are pinned against OBSERVED span_metrics connector output:
+# traces_span_metrics_calls_total{service_name, span_name, span_kind,
+# status_code, collector_instance_id} from the pinned Astronomy Shop collector.
+groups:
+  - name: sih-demo
+    interval: 15s
+    rules:
+      - alert: AstronomyShopPaymentErrorRate
+        expr: |
+          sum(rate(traces_span_metrics_calls_total{
+            service_name="payment",status_code="STATUS_CODE_ERROR"
+          }[2m]))
+          /
+          clamp_min(sum(rate(traces_span_metrics_calls_total{
+            service_name="payment"
+          }[2m])), 0.001) > 0.20
+          and
+          sum(rate(traces_span_metrics_calls_total{
+            service_name="payment"
+          }[2m])) > 0.05
+        for: 2m
+        labels:
+          detector_key: payment-error-rate
+          service_name: payment
+          deployment_environment_name: demo
+          tenant_id: demo
+          rule_version: "1"
+          severity: critical
+        annotations:
+          summary: Payment failures exceed 20 percent

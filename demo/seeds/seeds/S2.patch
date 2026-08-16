@@ -1,0 +1,14 @@
+diff --git a/src/payment/card.js b/src/payment/card.js
+index 556f688..ab43cf4 100644
+--- a/src/payment/card.js
++++ b/src/payment/card.js
+@@ -15,9 +15,6 @@ const cardValidator = require('simple-card-validator');
+ function validateCard(number, expirationYear, expirationMonth, currentYear, currentMonth) {
+   const { card_type: cardType, valid } = cardValidator(number).getCardDetails();
+ 
+-  if (!valid) {
+-    return 'Credit card info is invalid.';
+-  }
+ 
+   if (['visa', 'mastercard'].includes(cardType)) {
+     return `Sorry, we cannot process ${cardType} credit cards. Only VISA or MasterCard is accepted.`;
