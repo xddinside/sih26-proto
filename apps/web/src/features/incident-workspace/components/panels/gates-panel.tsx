@@ -46,6 +46,7 @@ function ReleaseRecordReceipts({ receipts }: { receipts: ReceiptView[] }) {
   const releaseReceipts = receipts.filter(
     (receipt) =>
       receipt.receiptId === "receipt-candidate-deploy" ||
+      receipt.receiptId === "receipt-service-swap" ||
       receipt.receiptId === "receipt-swap" ||
       receipt.receiptId === "receipt-ci" ||
       receipt.receiptId === "receipt-metric",

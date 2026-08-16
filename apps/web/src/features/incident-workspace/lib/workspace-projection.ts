@@ -1056,11 +1056,14 @@ function recoveryOf(
     })
   }
 
+  // Both ids appear in saved data: the captured export records
+  // receipt-service-swap; the dev fixtures record receipt-swap.
   const swapped = detail.events.some(
     (event) =>
       event.type === "broker_receipt_recorded" &&
       event.receipt.kind === "action" &&
-      event.receipt.receipt_id === "receipt-swap",
+      (event.receipt.receipt_id === "receipt-service-swap" ||
+        event.receipt.receipt_id === "receipt-swap"),
   )
 
   return {
