@@ -162,7 +162,7 @@ export function WatchPanel({ panel }: { panel: WatchPanelView | null }) {
               />
             </span>
           ))}
-          across three consecutive stage-2 samples, each below the 0.05 limit
+          across {afterRatios.length} consecutive stage-2 samples
         </p>
       ) : null}
     </Section>

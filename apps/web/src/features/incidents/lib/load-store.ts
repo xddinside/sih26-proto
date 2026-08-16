@@ -29,8 +29,11 @@ const MANIFEST_NAME = "manifest.json"
 export function resolveBundleDir(cwd: string): URL | null {
   let dir = path.resolve(cwd)
   for (let level = 0; level < 6; level += 1) {
-    for (const name of ["runs", path.join("contracts", "valid")]) {
-      const candidate = path.join(dir, "demo", "fixtures", name)
+    for (const candidate of [
+      path.join(dir, "demo", "saved-runs"),
+      path.join(dir, "demo", "fixtures", "runs"),
+      path.join(dir, "demo", "fixtures", "contracts", "valid"),
+    ]) {
       if (existsSync(path.join(candidate, MANIFEST_NAME))) {
         return pathToFileURL(candidate.endsWith(path.sep) ? candidate : `${candidate}${path.sep}`)
       }
