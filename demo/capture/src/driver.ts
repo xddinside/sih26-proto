@@ -1466,6 +1466,28 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const watchEnv: ReceiptEnv = { incidentId, runId, leaseId: watchLease.leaseId, stage: "watch", candidateHash }
 
     const stage1Samples: Record<string, unknown>[] = []
+    // The candidate cohort's span metrics need the spanmetrics connector's
+    // aggregation cadence; wait for the first candidate spans before sampling.
+    if (!offline) {
+      const spansDeadline = Date.now() + 300_000
+      for (;;) {
+        // Probe charges generate the candidate cohort spans the Watch gates
+        // sample; the connector needs one aggregation interval before the
+        // span-metrics series appears.
+        await evidenceRunner.probeCandidate(5).catch(() => null)
+        const spans = await shop.candidateSpanCount()
+        const ratio = await shop.candidateErrorRatio()
+        const latency = await shop.latencyP95("candidate")
+        if ((spans ?? 0) >= 1 && ratio !== null && latency !== null) {
+          console.log(`[capture] stage 1: candidate cohort metrics observed (spans=${spans}, ratio=${ratio.toFixed(3)}, p95=${latency.toFixed(3)}s)`)
+          break
+        }
+        if (Date.now() > spansDeadline) {
+          throw new Error("the candidate cohort never produced span metrics")
+        }
+        await sleepMs(10_000)
+      }
+    }
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
       const windowStart = new Date()
       // The candidate container needs a few seconds to boot; retry the probe
@@ -1556,7 +1578,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         rollout_stage: "1",
         plan_ref: watchPlanRef.artifact_ref.content_hash,
         samples: stage1Samples,
-        stage_outcome: "pass",
+        stage_outcome: stageOutcome(stage1Samples),
         sealed_at: new Date().toISOString(),
       },
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
@@ -1578,6 +1600,23 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       outcome: "ok",
     }), "action-broker")
     console.log(`[capture] stage 2 swap complete: live payment now ${swap.actualVersion}`)
+
+    // Wait for the 2m rate window to drain: the three recorded samples must
+    // each be below the Watch limit, never a mixed post-swap window.
+    if (!offline) {
+      const drainDeadline = Date.now() + 300_000
+      for (;;) {
+        const ratio = await shop.liveErrorRatio()
+        if ((ratio ?? 1) < WATCH_GATES.G2.limit) {
+          console.log(`[capture] stage 2: live ratio below the Watch limit (${ratio?.toFixed(3)}); starting samples`)
+          break
+        }
+        if (Date.now() > drainDeadline) {
+          throw new Error("the live error ratio never dropped below the Watch limit after the swap")
+        }
+        await sleepMs(10_000)
+      }
+    }
 
     const stage2Samples: Record<string, unknown>[] = []
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
@@ -1616,7 +1655,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         rollout_stage: "2",
         plan_ref: watchPlanRef.artifact_ref.content_hash,
         samples: stage2Samples,
-        stage_outcome: "pass",
+        stage_outcome: stageOutcome(stage2Samples),
         sealed_at: new Date().toISOString(),
       },
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
@@ -1637,11 +1676,17 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       }
       resolvedRatio = facts.baselineRatio
     } else {
+      // The resolved alert may leave Alertmanager before the first poll; when
+      // it does, the recorded firing alert supplies the identity and the
+      // Prometheus ALERTS series proves the resolution.
       const polled = await shop.waitForResolution(600_000)
-      if (polled === null) {
+      if (polled !== null) {
+        resolvedAlert = polled
+      } else if (!(await shop.isAlertFiring())) {
+        resolvedAlert = { ...alert, status: "resolved", endsAt: new Date().toISOString() }
+      } else {
         throw new Error("the detector never resolved after the swap")
       }
-      resolvedAlert = polled
       resolvedRatio = (await shop.liveErrorRatio()) ?? facts.baselineRatio
     }
     const resolvedBuilt = await buildTrigger({ alert: resolvedAlert, state: "resolved", signalValue: resolvedRatio })
@@ -1683,7 +1728,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         rollout_stage: "confirmation",
         plan_ref: watchPlanRef.artifact_ref.content_hash,
         samples: confirmationSamples,
-        stage_outcome: "pass",
+        stage_outcome: stageOutcome(confirmationSamples),
         sealed_at: new Date().toISOString(),
       },
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
@@ -1726,4 +1771,11 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await runtime.store.close()
     throw error
   }
+}
+
+/** A watch stage passes only when every recorded gate sample passes. */
+function stageOutcome(samples: Record<string, unknown>[]): "pass" | "fail" {
+  return samples.every((sample) => (sample as { outcome?: string }).outcome === "pass")
+    ? "pass"
+    : "fail"
 }
