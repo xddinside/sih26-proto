@@ -1,0 +1,19 @@
+{
+  "name": "sih-review-causal-fit",
+  "version": "1.0",
+  "stage": "verify",
+  "tool_group": "review-read-only",
+  "access": "Read: pinned read snapshot (read, grep, find, ls), pinned read-only analyzers, and the allow-listed docs proxy (context only, never evidence). No project writes, no shell; no direct production access, credentials, or actions.",
+  "independence": "One subagent per role with its own scratch; no peer reports before consolidation; the authoring subagent never reviews.",
+  "scope": "demo",
+  "role_code": "R2",
+  "output_schema": {
+    "name": "review-report",
+    "version": "1.0"
+  },
+  "retry": {
+    "malformed": "rerun-once-then-needs-human",
+    "timeout": "rerun-once-then-needs-human"
+  },
+  "demo_subset": true
+}

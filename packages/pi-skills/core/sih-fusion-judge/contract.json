@@ -1,0 +1,18 @@
+{
+  "name": "sih-fusion-judge",
+  "version": "1.0",
+  "stage": "diagnose",
+  "tool_group": "diagnose-read-only",
+  "access": "Read: Read Broker metric/trace/log/code queries only. Network: none beyond the allow-listed docs proxy (context only, never evidence). No writes, no shell, no open web; no direct production access, credentials, or actions.",
+  "independence": "Sees participant outputs only, never participant tool traces; may query the same read-only evidence.",
+  "scope": "demo",
+  "output_schema": {
+    "name": "fusion-judge-output",
+    "version": "1.0"
+  },
+  "retry": {
+    "malformed": "rerun-once-then-needs-human",
+    "timeout": "rerun-once-then-needs-human"
+  },
+  "demo_subset": true
+}
