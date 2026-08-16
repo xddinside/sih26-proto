@@ -1,0 +1,21 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Demo Profile Alertmanager config. Grouping and timings follow the settled
+# intake path (docs/research/incident-intake.md): group on tenant_id,
+# deployment_environment_name, service_name, detector_key; 15s initial wait,
+# 30s group interval, 30m repeat interval. Never group on instance, pod, span,
+# trace, or status.
+
+route:
+  group_by: ['tenant_id', 'deployment_environment_name', 'service_name', 'detector_key']
+  group_wait: 15s
+  group_interval: 30s
+  repeat_interval: 30m
+  receiver: intake-normalizer
+
+receivers:
+  - name: intake-normalizer
+    webhook_configs:
+      - url: 'http://intake-normalizer:9095/webhook'
+        send_resolved: true

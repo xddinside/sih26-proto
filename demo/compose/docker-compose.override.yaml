@@ -1,0 +1,65 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Demo Profile Compose overlay (issue #18). Layer on top of the pinned
+# Astronomy Shop observability stack:
+#
+#   docker compose -f compose.yaml -f compose.observability.yaml \
+#       -f ../sih26-proto/demo/compose/docker-compose.override.yaml up
+#
+# Adds: a Prometheus config override with rule_files and the Alertmanager
+# target, the mounted pinned rule file, Alertmanager, the Intake Normalizer,
+# and a local Control Plane endpoint stub.
+
+services:
+  prometheus:
+    command:
+      - --web.console.templates=/etc/prometheus/consoles
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --storage.tsdb.retention.time=7d
+      - --config.file=/etc/prometheus/prometheus-config.yaml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+      - --web.route-prefix=/
+      - --web.enable-otlp-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus-config.yaml:/etc/prometheus/prometheus-config.yaml
+      - ../seeds/rule.yml:/etc/prometheus/rules/sih-demo.yml
+
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.28.1
+    container_name: alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    restart: unless-stopped
+
+  intake-normalizer:
+    build:
+      context: ./intake-normalizer
+      dockerfile: ./Dockerfile
+    container_name: intake-normalizer
+    environment:
+      - PORT=9095
+      - CONTROL_PLANE_URL=http://control-plane:8080
+    ports:
+      - "${INTAKE_NORMALIZER_PORT:-9095}:9095"
+    restart: unless-stopped
+    depends_on:
+      - control-plane
+
+  control-plane:
+    build:
+      context: ./control-plane
+      dockerfile: ./Dockerfile
+    container_name: control-plane
+    environment:
+      - PORT=8080
+    ports:
+      - "${CONTROL_PLANE_PORT:-8080}:8080"
+    restart: unless-stopped

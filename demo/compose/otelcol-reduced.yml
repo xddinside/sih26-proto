@@ -1,0 +1,48 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Demo Profile collector config for the reduced verification profile. It uses
+# the span_metrics connector with its defaults (no dimensions configured), so it
+# emits exactly the same metric names and labels as the full upstream collector
+# config in the pinned Astronomy Shop:
+#
+#   traces_span_metrics_calls_total{service_name, span_name, span_kind, status_code, collector_instance_id}
+#   traces_span_metrics_duration_bucket{...}
+#
+# The full shop uses the upstream otel-collector configs (compose.yaml +
+# compose.observability.yaml); this file exists only so the reduced profile is
+# self-contained and light enough to verify under a low-RAM host.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+connectors:
+  span_metrics:
+
+exporters:
+  debug:
+  otlp_http/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [debug, span_metrics]
+    metrics:
+      receivers: [otlp, span_metrics]
+      processors: [memory_limiter]
+      exporters: [debug, otlp_http/prometheus]

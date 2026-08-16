@@ -1,0 +1,13 @@
+diff --git a/src/payment/card.js b/src/payment/card.js
+index f5598cb..556f688 100644
+--- a/src/payment/card.js
++++ b/src/payment/card.js
+@@ -19,7 +19,7 @@ function validateCard(number, expirationYear, expirationMonth, currentYear, curr
+     return 'Credit card info is invalid.';
+   }
+ 
+-  if (!['visa', 'mastercard'].includes(cardType)) {
++  if (['visa', 'mastercard'].includes(cardType)) {
+     return `Sorry, we cannot process ${cardType} credit cards. Only VISA or MasterCard is accepted.`;
+   }
+ 
