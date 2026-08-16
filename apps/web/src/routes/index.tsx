@@ -1,19 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { Button } from "@workspace/ui/components/button"
 
-export const Route = createFileRoute("/")({ component: App })
+import { IncidentListView } from "../features/incidents/components/incident-list-view"
+import { fetchIncidentList } from "../features/incidents/server/replay-server"
+import { ErrorState, LoadingState } from "../features/incidents/components/states"
 
-function App() {
-  return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-      </div>
-    </div>
-  )
+export const Route = createFileRoute("/")({
+  loader: () => fetchIncidentList(),
+  pendingComponent: () => (
+    <main className="container mx-auto max-w-5xl px-4 py-8">
+      <LoadingState label="Replaying saved bundle — verifying journal and sealed artifacts…" />
+    </main>
+  ),
+  component: IncidentListRoute,
+})
+
+function IncidentListRoute() {
+  const result = Route.useLoaderData()
+  if (!result.ok) {
+    return <ErrorState state={result.state} copy={result.copy} errors={result.errors} />
+  }
+  return <IncidentListView view={result.view} />
 }

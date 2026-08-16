@@ -10,33 +10,54 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as IncidentsIdRouteImport } from './routes/incidents.$id'
+import { Route as IncidentsIdArtifactsHashRouteImport } from './routes/incidents.$id_.artifacts.$hash'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IncidentsIdRoute = IncidentsIdRouteImport.update({
+  id: '/incidents/$id',
+  path: '/incidents/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IncidentsIdArtifactsHashRoute =
+  IncidentsIdArtifactsHashRouteImport.update({
+    id: '/incidents/$id_/artifacts/$hash',
+    path: '/incidents/$id/artifacts/$hash',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/incidents/$id': typeof IncidentsIdRoute
+  '/incidents/$id/artifacts/$hash': typeof IncidentsIdArtifactsHashRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/incidents/$id': typeof IncidentsIdRoute
+  '/incidents/$id/artifacts/$hash': typeof IncidentsIdArtifactsHashRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/incidents/$id': typeof IncidentsIdRoute
+  '/incidents/$id_/artifacts/$hash': typeof IncidentsIdArtifactsHashRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/incidents/$id' | '/incidents/$id/artifacts/$hash'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/incidents/$id' | '/incidents/$id/artifacts/$hash'
+  id: '__root__' | '/' | '/incidents/$id' | '/incidents/$id_/artifacts/$hash'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  IncidentsIdRoute: typeof IncidentsIdRoute
+  IncidentsIdArtifactsHashRoute: typeof IncidentsIdArtifactsHashRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +69,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/incidents/$id': {
+      id: '/incidents/$id'
+      path: '/incidents/$id'
+      fullPath: '/incidents/$id'
+      preLoaderRoute: typeof IncidentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/incidents/$id_/artifacts/$hash': {
+      id: '/incidents/$id_/artifacts/$hash'
+      path: '/incidents/$id/artifacts/$hash'
+      fullPath: '/incidents/$id/artifacts/$hash'
+      preLoaderRoute: typeof IncidentsIdArtifactsHashRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  IncidentsIdRoute: IncidentsIdRoute,
+  IncidentsIdArtifactsHashRoute: IncidentsIdArtifactsHashRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
