@@ -38,6 +38,7 @@ import {
   verificationReportSchema,
   watchReportSchema,
 } from "./reports.js";
+import { directActionRecordSchema, recoveryPointSchema, releaseRecordSchema } from "./release-records.js";
 import { savedBundleManifestSchema } from "./saved-bundle-manifest.js";
 import { rolloutWatchPlanSchema } from "./rollout-watch-plan.js";
 
@@ -77,6 +78,9 @@ export const SCHEMA_REGISTRY = {
   "verification-report": versionMap(verificationReportSchema),
   "watch-report": versionMap(watchReportSchema),
   "rollout-watch-plan": versionMap(rolloutWatchPlanSchema),
+  "release-record": versionMap(releaseRecordSchema),
+  "direct-action-record": versionMap(directActionRecordSchema),
+  "recovery-point": versionMap(recoveryPointSchema),
   "incident-report": versionMap(incidentReportSchema),
   "candidate-hash-input": versionMap(candidateHashInputSchema),
   "evidence-hash-input": versionMap(evidenceHashInputSchema),
