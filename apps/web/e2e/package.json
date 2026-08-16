@@ -1,0 +1,17 @@
+{
+  "name": "web-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Offline end-to-end checks for the saved-replay Incident Workspace (issue #22). Standalone package inside apps/web; not part of the root workspace.",
+  "scripts": {
+    "test": "bun run run-e2e.ts"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "22.20.1"
+  }
+}

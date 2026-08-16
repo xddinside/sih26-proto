@@ -1,0 +1,21 @@
+Rehearsal 2 — started 2026-08-16T20:39:18.737Z — total 171s
+  1s (scripted 0s) opening: incident list ok
+  11s (scripted 10s) run 1: header ok
+  19s (scripted 18s) run 1: trigger and intake ok
+  27s (scripted 26s) run 1: evidence set ok
+  37s (scripted 36s) run 1: hypotheses and gate ok
+  48s (scripted 47s) run 1: fusion rounds ok
+  53s (scripted 52s) run 1: remediation ok
+  61s (scripted 60s) run 1: verify ok
+  72s (scripted 71s) run 1: release gate and approvals ok
+  79s (scripted 78s) run 1: watch ok
+  85s (scripted 84s) run 1: policy ok
+  86s (scripted 85s) run 2: header ok
+  94s (scripted 93s) run 2: trigger and hypotheses ok
+  106s (scripted 105s) run 2: remediation ok
+  114s (scripted 113s) run 2: verify (R1 and T5) ok
+  132s (scripted 131s) run 2: verification report verdict ok
+  140s (scripted 139s) run 2: attempts and stages ok
+  150s (scripted 149s) run 2: policy ok
+  161s (scripted 160s) close: policy dials and risk table ok
+  171s (scripted 170s) close: rollback contract ok
