@@ -85,22 +85,22 @@ export async function prometheusRange(
 }
 
 export const ERROR_RATIO_QUERY =
-  'sum(rate(traces_span_metrics_calls_total{service_name="payment",status_code="STATUS_CODE_ERROR"}[2m])) / clamp_min(sum(rate(traces_span_metrics_calls_total{service_name="payment"}[2m])), 0.001)'
+  '(sum(rate(traces_span_metrics_calls_total{service_name="payment",status_code="STATUS_CODE_ERROR"}[2m])) or vector(0)) / clamp_min(sum(rate(traces_span_metrics_calls_total{service_name="payment"}[2m])), 0.001)'
 
 export const CANDIDATE_ERROR_RATIO_QUERY =
-  `sum(rate(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}",status_code="STATUS_CODE_ERROR"}[2m])) / clamp_min(sum(rate(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}"}[2m])), 0.001)`
+  `(sum(rate(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}",status_code="STATUS_CODE_ERROR"}[2m])) or vector(0)) / clamp_min(sum(rate(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}"}[2m])), 0.001)`
 
 export const CANDIDATE_CALLS_QUERY =
-  `sum(increase(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}"}[30s]))`
+  `sum(traces_span_metrics_calls_total{service_name="${CANDIDATE_SERVICE_NAME}"})`
 
 export const CALLS_QUERY =
   'sum(rate(traces_span_metrics_calls_total{service_name="payment"}[2m]))'
 
 export const LATENCY_P95_QUERY =
-  'histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_bucket{service_name="payment"}[2m])) by (le))'
+  'histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_milliseconds_bucket{service_name="payment"}[2m])) by (le)) / 1000'
 
 export const CANDIDATE_LATENCY_P95_QUERY =
-  `histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_bucket{service_name="${CANDIDATE_SERVICE_NAME}"}[2m])) by (le))`
+  `histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_milliseconds_bucket{service_name="${CANDIDATE_SERVICE_NAME}"}[2m])) by (le)) / 1000`
 
 /** Live charge error ratio for the payment service (null when no data). */
 export async function liveErrorRatio(): Promise<number | null> {
@@ -243,6 +243,22 @@ export async function pollAlert(
  * Alertmanager (its resolved state disappears from the v2 API). Returns a
  * resolved LiveAlert built from the last observed firing alert.
  */
+/** Whether the payment-error-rate alert is currently firing in Prometheus. */
+export async function isAlertFiring(): Promise<boolean> {
+  const response = await fetch(
+    `http://127.0.0.1:${PORTS.prometheus}/api/v1/query?query=${encodeURIComponent(
+      'ALERTS{alertname="AstronomyShopPaymentErrorRate"}',
+    )}`,
+  )
+  if (!response.ok) return false
+  const body = (await response.json()) as {
+    data?: { result?: Array<{ metric?: { alertstate?: string } }> }
+  }
+  return (body.data?.result ?? []).some(
+    (series) => series.metric?.alertstate === "firing",
+  )
+}
+
 export async function waitForResolution(
   timeoutMs: number,
 ): Promise<LiveAlert | null> {
