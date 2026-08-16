@@ -1,0 +1,22 @@
+{
+  "name": "@sih/demo-ci",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "SIH Demo Profile local CI runner and local git adapter: a Worker's repair produces a candidate with a content hash, and CI runs a scoped command against it. Plus the Compose release adapter contract.",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@sih/contracts": "file:../../packages/contracts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "22.20.1",
+    "typescript": "6.0.3"
+  }
+}

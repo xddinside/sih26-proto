@@ -1,0 +1,27 @@
+{
+  "name": "@sih/control-plane",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "SIH Control Plane: Incident/Run state machine, append-only journal, intake, gates, policy, leases, permits, workspace read APIs, and local PostgreSQL/artifact stores.",
+  "scripts": {
+    "dev": "portless control-plane bun run src/server.ts",
+    "start": "bun run src/server.ts",
+    "migrate": "bun run scripts/migrate.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "build": "bun build src/server.ts --outdir dist --target bun",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@sih/contracts": "workspace:*",
+    "postgres": "3.4.7"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "22.20.1",
+    "typescript": "6.0.3"
+  }
+}
