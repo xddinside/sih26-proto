@@ -19,6 +19,7 @@ export default [
       "eslint.config.js",
       ".prettierrc",
       "apps/web/src/routeTree.gen.ts",
+      "apps/web/e2e/**",
       "**/node_modules/**",
       "**/dist/**",
     ],
