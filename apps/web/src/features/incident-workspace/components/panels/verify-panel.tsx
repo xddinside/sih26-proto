@@ -147,7 +147,7 @@ export function VerifyPanel({ panel }: { panel: VerifyPanelView | null }) {
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Verification Report</p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <OutcomePill outcome={panel.verification.verdict} />
-                <span className="font-mono text-xs text-muted-foreground">
+                <span className="break-all font-mono text-xs text-muted-foreground">
                   candidate {panel.verification.candidateHash.slice(0, 16)}… · sealed {panel.verification.sealedAt} · policy{" "}
                   {panel.verification.policyVersion}
                 </span>

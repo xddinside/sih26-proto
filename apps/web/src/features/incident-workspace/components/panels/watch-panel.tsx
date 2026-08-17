@@ -49,7 +49,7 @@ export function WatchPanel({ panel }: { panel: WatchPanelView | null }) {
       ) : (
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground">
+            <span className="break-all font-mono text-xs text-muted-foreground">
               candidate {panel.plan.candidateHash.slice(0, 16)}… · strategy {panel.plan.strategy} · policy {panel.plan.policyVersion}
             </span>
             <Citation source={panel.plan.source} label="watch plan artifact" />

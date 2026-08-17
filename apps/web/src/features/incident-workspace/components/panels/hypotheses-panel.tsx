@@ -68,11 +68,11 @@ function HypothesisCard({ hypothesis, hypothesisSource }: { hypothesis: Hypothes
         <p className="text-xs uppercase tracking-wide text-muted-foreground">Evidence</p>
         <p className="mt-0.5 text-xs">
           <span className="text-muted-foreground">supporting</span>{" "}
-          <span className="font-mono">{hypothesis.supporting.length === 0 ? "none" : hypothesis.supporting.map(shortItem).join(", ")}</span>
+          <span className="break-words font-mono">{hypothesis.supporting.length === 0 ? "none" : hypothesis.supporting.map(shortItem).join(", ")}</span>
         </p>
         <p className="mt-0.5 text-xs">
           <span className="text-muted-foreground">opposing (eliminating items)</span>{" "}
-          <span className="font-mono">{hypothesis.opposing.length === 0 ? "none" : hypothesis.opposing.map(shortItem).join(", ")}</span>
+          <span className="break-words font-mono">{hypothesis.opposing.length === 0 ? "none" : hypothesis.opposing.map(shortItem).join(", ")}</span>
         </p>
       </div>
       {hypothesis.predictedObservations.length > 0 ? (

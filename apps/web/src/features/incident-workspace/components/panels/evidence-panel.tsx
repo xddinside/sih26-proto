@@ -81,7 +81,7 @@ function EvidenceItemRow({ item, incidentId }: { item: EvidenceItemView; inciden
       <ul className="mt-2">
         {item.links.map((link, index) => (
           <li key={index} className="flex flex-wrap items-center gap-2 py-0.5 text-sm">
-            <a href={link.uri} className="text-xs underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
+            <a href={link.uri} className="break-all font-mono text-xs underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
               {link.uri}
             </a>
             {link.expired ? <StatePill tone="warning">link expired</StatePill> : null}
@@ -126,7 +126,7 @@ export function EvidencePanel({
                 source={evidence.revision.source}
                 label="evidence revision"
               />
-              <span className="ml-2 font-mono text-xs text-muted-foreground">{evidence.revision.revisionId}</span>
+              <span className="ml-2 break-all font-mono text-xs text-muted-foreground">{evidence.revision.revisionId}</span>
               <span className="ml-2 text-xs text-muted-foreground">
                 pinned {evidence.revision.pinnedAt} · {evidence.revision.itemCount} items
               </span>

@@ -52,7 +52,7 @@ export function PolicyPanel({ panel }: { panel: PolicyPanelView }) {
       description="recorded dial values replay read-only; the risk table and Demo Profile caps are fixed Solution Contract content"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm font-semibold">policy {panel.policyVersion}</span>
+        <span className="break-all font-mono text-sm font-semibold">policy {panel.policyVersion}</span>
         <Citation source={{ kind: "replay", ref: "replay" }} label="recorded policy version" />
       </div>
       <div className="mt-3 grid gap-4 sm:grid-cols-2">

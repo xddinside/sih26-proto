@@ -20,7 +20,7 @@ function StageChips({ run }: { run: RunView }) {
   return (
     <ol className="flex flex-wrap gap-2" aria-label={`attempt ${run.attempt} stages`}>
       {run.stages.map((stage) => (
-        <li key={stage.stage} className="flex items-center gap-1.5">
+        <li key={stage.stage} className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
           <StatePill tone={stageTone(stage.status)}>
             {stage.stage}
             {stage.status !== null ? ` · ${stage.status}` : " · not-reached"}

@@ -46,7 +46,7 @@ export function RemediationPanel({ panel }: { panel: RemediationPanelView | null
                 <code>{panel.diff.diffText}</code>
               </pre>
               <p className="mt-1 text-xs text-muted-foreground">
-                diff hash <span className="font-mono">{panel.diff.diffHash}</span> · base{" "}
+                diff hash <span className="break-all font-mono">{panel.diff.diffHash}</span> · base{" "}
                 <span className="font-mono">{panel.diff.baseRef.slice(0, 16)}…</span>
               </p>
             </div>

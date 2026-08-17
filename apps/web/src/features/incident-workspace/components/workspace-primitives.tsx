@@ -24,7 +24,7 @@ export function TableRegion({
   children: ReactNode
 }) {
   return (
-    <div>
+    <div className="overflow-x-clip">
       {summary !== undefined ? <p className="mb-2 text-xs text-muted-foreground">{summary}</p> : null}
       <div className="overflow-x-auto" role="region" aria-label={label} tabIndex={0}>
         <table className={`w-full border-collapse text-sm ${minWidth ?? "min-w-[44rem]"}`}>{children}</table>

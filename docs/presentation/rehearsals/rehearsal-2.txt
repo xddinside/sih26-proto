@@ -1,4 +1,4 @@
-Rehearsal 2 — started 2026-08-17T00:10:02.212Z — total 171s
+Rehearsal 2 — started 2026-08-17T00:50:21.236Z — total 171s
   1s (scripted 0s) opening: incident list ok
   11s (scripted 10s) run 1: header ok
   19s (scripted 18s) run 1: trigger and intake ok
