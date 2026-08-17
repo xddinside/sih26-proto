@@ -8,6 +8,7 @@
  * will show.
  */
 import type { Page } from "playwright"
+import { readFile } from "node:fs/promises"
 
 import type { SuiteRunner } from "../lib/report"
 import type { DevServer } from "../lib/server"
@@ -30,7 +31,14 @@ export async function runOutcomes(server: DevServer, runner: SuiteRunner, page: 
   check("list heading", text.includes("Incidents"), "the pinned / route renders the incident list")
   check("opening line", text.includes("everything shown is saved evidence, nothing runs live"), "fixed opening statement present")
   check("standing saved banner", text.includes("bundle format 1.0 · 2 incidents") && text.includes("evaluation time is the bundle capture time, never the live clock"), "page-level saved-run banner with the capture timestamp renders")
-  check("capture timestamp", text.includes("2026-08-16T17:16:21.283Z"), "manifest capture time shown, never the live clock")
+  const manifest = JSON.parse(
+    await readFile(new URL("../../../../demo/saved-runs/manifest.json", import.meta.url), "utf8"),
+  ) as { capture_time?: string }
+  check(
+    "capture timestamp",
+    manifest.capture_time !== undefined && text.includes(manifest.capture_time),
+    "manifest capture time shown, never the live clock",
+  )
   check("run 1 row closed", /inc-demo-payment-1[\s\S]*?closed/.test(text), "Run 1 row shows closed")
   check("run 2 row open", /inc-demo-payment-2[\s\S]*?open/.test(text), "Run 2 row shows open")
   const badgeCount = await page.locator("text=Saved Demo Run").count()
@@ -69,7 +77,7 @@ export async function runOutcomes(server: DevServer, runner: SuiteRunner, page: 
       "confirmation window G2 recorded value 0 < 0.05 with outcome pass",
     )
   }
-  check("run-1 hybrid decision", text.includes("approval-required") && text.includes("outside-window"), "scheduled-hybrid policy decision recorded with its window")
+  check("run-1 hybrid decision", /approval-required/i.test(text) && text.includes("a recorded approval lets it proceed"), "scheduled-hybrid policy decision recorded with its reason")
   check("run-1 human approve", text.includes("approve"), "demo-operator approve action recorded")
 
   // Run 2 — deterministic failed verification.
