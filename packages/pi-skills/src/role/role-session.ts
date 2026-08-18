@@ -77,6 +77,7 @@ export class PiRoleSession {
   private readonly abortController = new AbortController()
   private turnCount = 0
   private nonTerminalCalls = 0
+  private deadlineExceeded = false
   private lastAssistant: { stopReason?: string; errorMessage?: string } | undefined
   private startedAt = Date.now()
   private loopError: Error | undefined
@@ -162,14 +163,20 @@ export class PiRoleSession {
   }
 
   private classifyStatus(): RoleSessionStatus {
-    if (this.options.terminalTool.submission !== undefined) {
-      return "succeeded"
+    // The wall-clock budget is a hard failure even when the loop itself did
+    // not notice: a model turn that stalls past the deadline is cut off by
+    // the per-turn deadline controller and reported as failed, not aborted.
+    if (this.deadlineExceeded) {
+      return "failed"
     }
     if (this.options.signal?.aborted || this.abortController.signal.aborted) {
       return "aborted"
     }
     if (this.lastAssistant?.stopReason === "aborted") {
       return "aborted"
+    }
+    if (this.options.terminalTool.submission !== undefined) {
+      return "succeeded"
     }
     return "failed"
   }
@@ -178,14 +185,14 @@ export class PiRoleSession {
     if (this.loopError !== undefined) {
       return `role session error: ${this.loopError.message}`
     }
+    if (this.deadlineExceeded || Date.now() - this.startedAt >= this.limits.maxDurationMs) {
+      return `wall-clock budget exhausted (${this.limits.maxDurationMs}ms)`
+    }
     if (this.turnCount >= this.limits.maxModelTurns) {
       return `model turn budget exhausted (${this.limits.maxModelTurns})`
     }
-    if (this.nonTerminalCalls >= this.limits.maxNonTerminalToolCalls) {
+    if (this.nonTerminalCalls > this.limits.maxNonTerminalToolCalls) {
       return `non-terminal tool call budget exhausted (${this.limits.maxNonTerminalToolCalls})`
-    }
-    if (Date.now() - this.startedAt >= this.limits.maxDurationMs) {
-      return `wall-clock budget exhausted (${this.limits.maxDurationMs}ms)`
     }
     return "no terminal submission made"
   }
@@ -232,6 +239,9 @@ export class PiRoleSession {
     if (this.options.terminalTool.submission !== undefined) {
       return true
     }
+    if (this.deadlineExceeded) {
+      return true
+    }
     if (this.turnCount >= this.limits.maxModelTurns) {
       return true
     }
@@ -257,6 +267,32 @@ export class PiRoleSession {
       options: { signal: options?.signal, maxTokens: options?.maxTokens },
       idempotencyKey: `${this.options.lease.runId}-${this.options.agentId}-turn-${this.turnCount}`,
     }
-    return this.options.gateway.stream(this.options.lease, request)
+    // The wall-clock budget is enforced per turn: a deadline controller cuts
+    // the provider stream off if the turn outlives the remaining budget. The
+    // loop's own signal is combined in, so cancellation and the budget stay
+    // distinct (only the budget marks the session failed).
+    const remaining = this.startedAt + this.limits.maxDurationMs - Date.now()
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    if (remaining <= 0) {
+      this.deadlineExceeded = true
+      controller.abort()
+    } else {
+      timer = setTimeout(() => {
+        this.deadlineExceeded = true
+        controller.abort()
+      }, remaining)
+    }
+    const signals = [controller.signal]
+    if (request.options?.signal !== undefined) {
+      signals.push(request.options.signal)
+    }
+    request.options = { ...request.options, signal: AbortSignal.any(signals) }
+    const stream = await this.options.gateway.stream(this.options.lease, request)
+    void stream.result().then(
+      () => clearTimeout(timer),
+      () => clearTimeout(timer),
+    )
+    return stream
   }
 }

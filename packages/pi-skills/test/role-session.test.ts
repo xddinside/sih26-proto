@@ -5,8 +5,11 @@
  * hygiene. No PostgreSQL, no network, no real model.
  */
 import { describe, expect, test } from "bun:test"
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai"
+import type { AssistantMessage, streamSimple } from "@earendil-works/pi-ai"
+import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { FakeControlPlaneClient, ModelGateway, ReadBroker, scriptedStreamingProvider } from "@sih/brokers"
-import type { LeaseRef, ScriptedTurn } from "@sih/brokers"
+import type { GatewayStreamingProvider, LeaseRef, ScriptedTurn } from "@sih/brokers"
 
 import { makeHypothesis, makeLease, REVISION_ID } from "./helpers.js"
 import { createReadTool } from "../src/role/broker-tools.js"
@@ -43,6 +46,67 @@ function readArgs(backend = "prometheus"): Record<string, unknown> {
   return { backend, connection_id: "c1", query: "sum(rate(http_errors[5m]))" }
 }
 
+/** A streaming double whose turns stall until the signal fires or 1s passes. */
+function slowStreamingProvider(): GatewayStreamingProvider {
+  return (request, { model }) => {
+    const stream = createAssistantMessageEventStream()
+    void (async () => {
+      const partial = stallMessage(model, "stalling…")
+      stream.push({ type: "start", partial })
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 1000)
+        request.options?.signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer)
+            resolve()
+          },
+          { once: true },
+        )
+      })
+      const aborted = request.options?.signal?.aborted === true
+      const message = aborted
+        ? { ...partial, content: [], stopReason: "aborted" as const }
+        : { ...partial, content: [{ type: "text" as const, text: "done" }], stopReason: "stop" as const }
+      if (aborted) {
+        stream.push({ type: "error", reason: "aborted", error: message })
+      } else {
+        stream.push({ type: "done", reason: "stop", message })
+      }
+      stream.end(message)
+    })()
+    return stream
+  }
+}
+
+function stallMessage(model: Parameters<typeof streamSimple>[0], text: string): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  }
+}
+
+function lastAssistantStopReason(messages: AgentMessage[]): string | undefined {
+  const last = [...messages].reverse().find((message) => message.role === "assistant")
+  if (last === undefined || !("stopReason" in last)) {
+    return undefined
+  }
+  return last.stopReason
+}
+
 interface HarnessOptions {
   turns?: readonly ScriptedTurn[]
   authority?: Partial<{
@@ -54,20 +118,23 @@ interface HarnessOptions {
   lease?: LeaseRef
   limits?: { maxModelTurns?: number; maxNonTerminalToolCalls?: number; maxDurationMs?: number }
   signal?: AbortSignal
+  gateway?: ModelGateway
 }
 
 function makeHarness(options: HarnessOptions = {}) {
   const cp = new FakeControlPlaneClient()
   cp.leases.add("lease-test-1")
-  const gateway = new ModelGateway(
-    cp,
-    undefined,
-    scriptedStreamingProvider({
-      turns: { "agent-1": options.turns ?? [] },
-      honorSignal: true,
-    }),
-    SECRET,
-  )
+  const gateway =
+    options.gateway ??
+    new ModelGateway(
+      cp,
+      undefined,
+      scriptedStreamingProvider({
+        turns: { "agent-1": options.turns ?? [] },
+        honorSignal: true,
+      }),
+      SECRET,
+    )
   const broker = new ReadBroker(cp)
   const readTool = createReadTool({
     broker,
@@ -373,6 +440,41 @@ describe("PiRoleSession", () => {
     abort.abort()
     const result = await session.run("Go.")
     expect(result.status).toBe("aborted")
+  })
+
+  test("the wall-clock budget stops the session at a turn boundary", async () => {
+    const { session } = makeHarness({
+      turns: [readTurn("call-1", readArgs())],
+      limits: { maxDurationMs: 1 },
+    })
+    const result = await session.run("Go.")
+    expect(result.status).toBe("failed")
+    expect(result.failureReason).toContain("wall-clock")
+    expect(result.terminalSubmission).toBeUndefined()
+  })
+
+  test("a stalled model turn is cut off by the wall-clock budget", async () => {
+    const cp = new FakeControlPlaneClient()
+    cp.leases.add("lease-test-1")
+    const gateway = new ModelGateway(cp, undefined, slowStreamingProvider(), undefined)
+    const { session } = makeHarness({ gateway, limits: { maxDurationMs: 50 } })
+    const result = await session.run("Go.")
+    expect(result.status).toBe("failed")
+    expect(result.failureReason).toContain("wall-clock")
+    expect(lastAssistantStopReason(result.messages)).toBe("aborted")
+  })
+
+  test("cancellation mid-turn yields an aborted status", async () => {
+    const cp = new FakeControlPlaneClient()
+    cp.leases.add("lease-test-1")
+    const gateway = new ModelGateway(cp, undefined, slowStreamingProvider(), undefined)
+    const { session } = makeHarness({ gateway })
+    const running = session.run("Go.")
+    await Bun.sleep(30)
+    session.abort()
+    const result = await running
+    expect(result.status).toBe("aborted")
+    expect(lastAssistantStopReason(result.messages)).toBe("aborted")
   })
 
   test("records and transcripts contain no provider key or authorization header", async () => {
