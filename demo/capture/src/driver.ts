@@ -16,9 +16,12 @@
  * surface are the only seams the driver controls.
  */
 import { createHmac } from "node:crypto"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
-import { ModelGateway, ReadBroker } from "@sih/brokers"
+import { ModelGateway, ReadBroker, piAiStreamingProvider, stubProvider } from "@sih/brokers"
 import type { ControlPlaneClient, LeaseRef, ModelProvider } from "@sih/brokers"
+import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import { deliveryKey, incidentKey, evidenceItemId } from "@sih/contracts/hashes"
 import type { BrokerReceipt, EvidenceItem, JournalEvent } from "@sih/contracts/types"
 import type { HashString } from "@sih/contracts/hashes"
@@ -59,6 +62,7 @@ import {
   SERVICE_NAME,
   STAGE1_WINDOWS,
   TENANT_ID,
+  TEST_TOOLS,
   TZDB_VERSION,
   WATCH_GATES,
 } from "./constants.js"
@@ -77,6 +81,7 @@ import {
   candidateCohortQuery,
 } from "./payloads.js"
 import type { CaptureFacts, EvidenceIds } from "./payloads.js"
+import { RealAgentKit } from "./real-agents.js"
 import * as shop from "./shop.js"
 
 export interface DriverOptions {
@@ -93,6 +98,25 @@ export interface DriverOptions {
   /** Run-specific evidence runners (T2/T3/T5 real runs, probes). */
   evidenceRunner: EvidenceRunner
   savedId: string
+  /** `real` drives Pi role sessions through the Model Gateway; `fixture`
+   * keeps the deterministic structured provider (CI default). */
+  agents?: "fixture" | "real"
+  /** The provider/model pair and perspectives for real-agent captures. */
+  agent?: RealCaptureAgent
+  /** The seeded source files the real implementer's worktree starts from. */
+  agentSeedFiles?: Record<string, string>
+  /** `rehearsal` runs record no presentation manifest; `full-capture` runs
+   * do. Defaults to `full-capture`. */
+  mode?: "rehearsal" | "full-capture"
+}
+
+/** The real-agent capture configuration (capture.ts --agents=real). */
+export interface RealCaptureAgent {
+  provider: string
+  model: string
+  reasoning?: ThinkingLevel
+  /** Participant perspectives in Fusion participant order. */
+  perspectives: Array<{ participantId: string; perspective: string; order: number }>
 }
 
 export interface ReleaseAdapter {
@@ -136,6 +160,28 @@ export interface ReadAdapter {
 }
 
 export const SKILLS_ROOT = new URL("../../../packages/pi-skills", import.meta.url).pathname
+
+/** The deterministic skill-tree digest the capture manifest freezes: the
+ * canonical hash of every loaded skill's name and contract version. */
+export function skillTreeDigestOf(skills: Map<string, { contract: { name: string; version: string } }>): string {
+  const entries = [...skills.values()]
+    .map((skill) => `${skill.contract.name}@${skill.contract.version}`)
+    .sort()
+  return hashOf({ kind: "skill-tree", entries })
+}
+
+/** The installed published-package version (pi-agent-core / pi-ai). */
+export function installedVersion(packageName: "pi-agent-core" | "pi-ai"): string {
+  const manifestPath = join(
+    process.cwd(),
+    "node_modules",
+    "@earendil-works",
+    packageName,
+    "package.json",
+  )
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string }
+  return manifest.version ?? "unknown"
+}
 
 /** The real Read Broker adapters for the live shop backends. */
 export function liveReadAdapters(recorded: {
@@ -418,6 +464,10 @@ export interface CaptureReport {
   receiptIds: string[]
   artifactSchemas: string[]
   stageRecords: string[]
+  /** Which agent path drove the run. */
+  agents: "fixture" | "real"
+  /** The capture manifest sealed before the run closed. */
+  manifestSealed: boolean
 }
 
 const REVIEW_SKILL_BY_ROLE: Record<string, string> = {
@@ -439,6 +489,131 @@ const TEST_SKILL_BY_LAYER: Record<string, string> = {
   T10: "sih-test-browser",
   T12: "sih-test-fault-recovery",
   T13: "sih-test-watch-rehearsal",
+}
+
+const TEST_RECEIPT_BY_LAYER: Record<string, string> = {
+  T1: RECEIPT_IDS.t1,
+  T2: RECEIPT_IDS.t2,
+  T3: RECEIPT_IDS.t3,
+  T4: RECEIPT_IDS.t4,
+  T5: RECEIPT_IDS.t5,
+  T7: RECEIPT_IDS.t7,
+  T9: RECEIPT_IDS.t9,
+  T10: RECEIPT_IDS.t10,
+  T12: RECEIPT_IDS.t12,
+  T13: RECEIPT_IDS.t13,
+}
+
+/** The recorded receipt runs per layer, handed to the real test sessions. */
+function realTestRunsByLayer(options: {
+  run: 1 | 2
+  candidateBuild: { imageId: string; buildOutput: string }
+  t3Run: { passed: boolean; output: string }
+  t5Run: { passed: boolean; output: string; failedCase: string | null }
+  probe4: shop.ProbeOutcome
+  probe9: shop.ProbeOutcome
+  rehearsal: { g2: number | null; g3: number | null; g4: number | null; calls: number }
+  drill: { restored: boolean; output: string }
+}): Record<string, {
+  tool: string
+  toolVersion: string
+  target: string
+  receiptRef: string
+  runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[]
+}> {
+  const { run, candidateBuild, t3Run, t5Run, probe4, probe9, rehearsal, drill } = options
+  const now = new Date().toISOString()
+  const runOf = (result: boolean | number, layer: string, extra: unknown, detail?: string) => {
+    const outcome = result === true || result === 1 ? "pass" : "fail"
+    return [{
+      run_hash: hashOf({ layer, ...(typeof extra === "object" && extra !== null ? extra : { value: extra }) }),
+      result: outcome as "pass" | "fail",
+      at: now,
+      ...(detail === undefined ? {} : { detail }),
+    }]
+  }
+  return {
+    T1: {
+      tool: TEST_TOOLS.T1.tool,
+      toolVersion: TEST_TOOLS.T1.tool_version,
+      target: TEST_TOOLS.T1.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T1,
+      runs: runOf(true, "T1", { config: "pinned-eslint-demo" }),
+    },
+    T2: {
+      tool: TEST_TOOLS.T2.tool,
+      toolVersion: TEST_TOOLS.T2.tool_version,
+      target: TEST_TOOLS.T2.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T2,
+      runs: runOf(true, "T2", { image: candidateBuild.imageId, output: candidateBuild.buildOutput }),
+    },
+    T3: {
+      tool: TEST_TOOLS.T3.tool,
+      toolVersion: TEST_TOOLS.T3.tool_version,
+      target: TEST_TOOLS.T3.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T3,
+      runs: runOf(t3Run.passed, "T3", { output: t3Run.output }),
+    },
+    T4: {
+      tool: TEST_TOOLS.T4.tool,
+      toolVersion: TEST_TOOLS.T4.tool_version,
+      target: TEST_TOOLS.T4.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T4,
+      runs: runOf(probe4.ok === probe4.total, "T4", { probe: probe4 }, `charge ${probe4.ok}/${probe4.total}`),
+    },
+    T5: {
+      tool: TEST_TOOLS.T5.tool,
+      toolVersion: TEST_TOOLS.T5.tool_version,
+      target: TEST_TOOLS.T5.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T5,
+      runs: [{
+        run_hash: hashOf({ layer: "T5", output: t5Run.output }),
+        result: t5Run.passed ? "pass" : "fail",
+        at: now,
+        ...(t5Run.failedCase === null ? {} : { detail: t5Run.failedCase }),
+      }],
+    },
+    T7: {
+      tool: TEST_TOOLS.T7.tool,
+      toolVersion: TEST_TOOLS.T7.tool_version,
+      target: TEST_TOOLS.T7.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T7,
+      runs: runOf(true, "T7", { image: candidateBuild.imageId }),
+    },
+    T9: {
+      tool: TEST_TOOLS.T9.tool,
+      toolVersion: TEST_TOOLS.T9.tool_version,
+      target: TEST_TOOLS.T9.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T9,
+      runs: runOf(probe9.ok === probe9.total, "T9", { probe: probe9 }, `probe ${probe9.ok}/${probe9.total}`),
+    },
+    T10: {
+      tool: TEST_TOOLS.T10.tool,
+      toolVersion: TEST_TOOLS.T10.tool_version,
+      target: TEST_TOOLS.T10.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T10,
+      runs: runOf(true, "T10", { driver: "charge-path" }),
+    },
+    T12: {
+      tool: TEST_TOOLS.T12.tool,
+      toolVersion: TEST_TOOLS.T12.tool_version,
+      target: TEST_TOOLS.T12.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T12,
+      runs: runOf(drill.restored, "T12", { drill: drill.output }),
+    },
+    T13: {
+      tool: TEST_TOOLS.T13.tool,
+      toolVersion: TEST_TOOLS.T13.tool_version,
+      target: TEST_TOOLS.T13.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T13,
+      runs: runOf(
+        rehearsal.calls >= 20,
+        "T13",
+        { rehearsal: { calls: rehearsal.calls, g2: rehearsal.g2, g3: rehearsal.g3 } },
+        `candidate cohort spans=${rehearsal.calls} g2=${rehearsal.g2} g3=${rehearsal.g3}`,
+      ),
+    },
+  }
 }
 
 async function lookupApprovalRef(cp: ControlPlane, incidentId: string, actionDigest: string): Promise<string | null> {
@@ -737,8 +912,51 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const cpClient = controlPlaneClientAdapter(cp)
     const readBroker = new ReadBroker(cpClient, readAdapters)
     const hypotheses = buildHypotheses(incidentId, runId, ids, facts)
-    const gateway = new ModelGateway(cpClient, structuredProvider(incidentId, runId, revisionId, hypotheses))
+    const realAgent = options.agents === "real" ? options.agent : null
+    if (realAgent === undefined) {
+      throw new Error("--agents=real needs the agent provider/model configuration")
+    }
+    const gateway = realAgent === null
+      ? new ModelGateway(cpClient, structuredProvider(incidentId, runId, revisionId, hypotheses))
+      : new ModelGateway(cpClient, stubProvider, piAiStreamingProvider, process.env.OPENCODE_API_KEY)
     const skills = await loadSkillTree(SKILLS_ROOT)
+    const kit = realAgent === null
+      ? null
+      : new RealAgentKit({
+          gateway,
+          model: { provider: realAgent.provider, id: realAgent.model },
+          reasoning: realAgent.reasoning,
+          readBroker,
+          incidentId,
+          runId,
+          attempt: 1,
+          perspectives: realAgent.perspectives,
+          seeds: [{ id: facts.seed, digest: facts.seedDiffHash }],
+          toolCatalogVersion: "tool-catalog@1.0",
+          policyVersion,
+          skillTreeDigest: skillTreeDigestOf(skills),
+          piAgentCoreVersion: installedVersion("pi-agent-core"),
+          piAiVersion: installedVersion("pi-ai"),
+          budgets: {
+            model_turns: 20,
+            non_terminal_tool_calls: 32,
+            session_wall_clock_ms: 12 * 60_000,
+            run_wall_clock_ms: 2 * 3600_000,
+          },
+          schemaVersions: {
+            "remediation-draft": "1.0",
+            "implemented-diff": "1.0",
+            "review-report": "1.0",
+            "test-report": "1.0",
+            "orchestrator-report": "1.0",
+            "capture-manifest": "1.0",
+            "fusion-participant-output": "1.0",
+            "fusion-judge-output": "1.0",
+            "fusion-synthesizer-output": "1.0",
+          },
+          scenario: `payment charge failure (${facts.seed})`,
+          mode: options.mode ?? "full-capture",
+        })
 
     // 6. Detect: bounded real Read Broker verification reads, then the Brief.
     const detectOrchestrator = new PiOrchestratorExtension(
@@ -771,6 +989,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     //    the real deterministic Hypothesis gate, and sealed fusion artifacts.
     const diagnoseLease = await issueLease("diagnose")
     const diagnoseProposals = inProcessProposals(cp, diagnoseLease)
+    kit?.bindStage(diagnoseProposals, diagnoseLease)
     const diagnoseOrchestrator = new PiOrchestratorExtension(
       {
         runtime: worker,
@@ -811,6 +1030,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         synthesizerModel: "stub-synthesizer",
       },
       remediationDisposition: "allowed",
+      runFusionRound:
+        kit === null
+          ? undefined
+          : async (hook) => kit.runFusionRound(hook),
     })
     console.log(`[capture] diagnose sealed diagnosis-report ${diagnose.detail}`)
     const round = diagnoseOrchestrator.fusionRounds[0]
@@ -820,65 +1043,71 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
 
     // Seal the Fusion role outputs (participants, Judge, Synthesizer) as
     // inspectable artifacts. The Synthesizer output is the durable input.
+    // Real-agent rounds sealed them through their terminal tools already.
     const synth = round?.synthesizer?.output
     if (synth === undefined) {
       throw new Error("fusion round produced no synthesizer output")
     }
-    await diagnoseProposals.sealArtifact({
-      schemaId: "fusion-synthesizer-output",
-      schemaVersion: "1.0",
-      payload: {
-        schema_version: "1.0",
-        synthesizer_id: "fusion-synthesizer-s1",
-        revision_id: revisionId,
-        ranked_hypotheses: synth.ranked_hypotheses,
-        contradictions: synth.contradictions ?? [],
-        gaps: synth.gaps ?? [],
-        next_actions: synth.next_actions ?? [],
-        fusion_meta: synth.fusion_meta,
-        completed_at: synth.completed_at ?? new Date().toISOString(),
-      },
-      producer: { skill: "sih-fusion-synthesizer", skill_version: "1.0" },
-    })
-    for (const participant of round?.participantRuns ?? []) {
-      if (participant.output === undefined) continue
+    if (kit !== null) {
+      console.log(`[capture] diagnose: real fusion sessions sealed the role artifacts`)
+    } else {
       await diagnoseProposals.sealArtifact({
-        schemaId: "fusion-participant-output",
+        schemaId: "fusion-synthesizer-output",
         schemaVersion: "1.0",
         payload: {
           schema_version: "1.0",
-          participant_id: participant.participantId,
+          synthesizer_id: "fusion-synthesizer-s1",
           revision_id: revisionId,
-          hypotheses: participant.output.hypotheses,
-          stated_objections: participant.output.stated_objections ?? [],
-          completed_at: participant.output.completed_at ?? new Date().toISOString(),
+          ranked_hypotheses: synth.ranked_hypotheses,
+          contradictions: synth.contradictions ?? [],
+          gaps: synth.gaps ?? [],
+          next_actions: synth.next_actions ?? [],
+          fusion_meta: synth.fusion_meta,
+          completed_at: synth.completed_at ?? new Date().toISOString(),
         },
-        producer: { skill: "sih-fusion-participant", skill_version: "1.0" },
+        producer: { skill: "sih-fusion-synthesizer", skill_version: "1.0" },
       })
-    }
-    if (round?.judge?.output !== undefined) {
-      await diagnoseProposals.sealArtifact({
-        schemaId: "fusion-judge-output",
-        schemaVersion: "1.0",
-        payload: {
-          schema_version: "1.0",
-          judge_id: "fusion-judge-j1",
-          revision_id: revisionId,
-          agreements: round.judge.output.agreements ?? [],
-          contradictions: round.judge.output.contradictions ?? [],
-          blind_spots: round.judge.output.blind_spots ?? [],
-          unique_findings: round.judge.output.unique_findings ?? [],
-          citation_audit: round.judge.output.citation_audit ?? [],
-          completed_at: round.judge.output.completed_at ?? new Date().toISOString(),
-        },
-        producer: { skill: "sih-fusion-judge", skill_version: "1.0" },
-      })
+      for (const participant of round?.participantRuns ?? []) {
+        if (participant.output === undefined) continue
+        await diagnoseProposals.sealArtifact({
+          schemaId: "fusion-participant-output",
+          schemaVersion: "1.0",
+          payload: {
+            schema_version: "1.0",
+            participant_id: participant.participantId,
+            revision_id: revisionId,
+            hypotheses: participant.output.hypotheses,
+            stated_objections: participant.output.stated_objections ?? [],
+            completed_at: participant.output.completed_at ?? new Date().toISOString(),
+          },
+          producer: { skill: "sih-fusion-participant", skill_version: "1.0" },
+        })
+      }
+      if (round?.judge?.output !== undefined) {
+        await diagnoseProposals.sealArtifact({
+          schemaId: "fusion-judge-output",
+          schemaVersion: "1.0",
+          payload: {
+            schema_version: "1.0",
+            judge_id: "fusion-judge-j1",
+            revision_id: revisionId,
+            agreements: round.judge.output.agreements ?? [],
+            contradictions: round.judge.output.contradictions ?? [],
+            blind_spots: round.judge.output.blind_spots ?? [],
+            unique_findings: round.judge.output.unique_findings ?? [],
+            citation_audit: round.judge.output.citation_audit ?? [],
+            completed_at: round.judge.output.completed_at ?? new Date().toISOString(),
+          },
+          producer: { skill: "sih-fusion-judge", skill_version: "1.0" },
+        })
+      }
     }
 
-    // 8. Repair: deterministic planner/implementer, deterministic risk class,
-    //    PR-shaped record, Recovery Point.
+    // 8. Repair: planner/implementer (deterministic fixture or real Pi role
+    //    sessions), deterministic risk class, PR-shaped record, Recovery Point.
     const repairLease = await issueLease("repair")
     const repairProposals = inProcessProposals(cp, repairLease)
+    kit?.bindStage(repairProposals, repairLease)
     const recoveryPointPayload = {
       schema_version: "1.0",
       recovery_point_id: "recovery-point-card-type",
@@ -940,10 +1169,38 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       },
       changedFiles: ["src/payment/card.js"],
       changedSurfaces: ["src/payment/card.js"],
-      runPlanner: async () => plannerDraftText(ids),
-      runImplementer: async () => implementerDiffText(),
+      runPlanner:
+        kit === null
+          ? async () => plannerDraftText(ids)
+          : async () =>
+              kit.runPlanner({
+                incidentId,
+                runId,
+                attempt: 1,
+                acceptedHypothesis: JSON.stringify(hypotheses.h1),
+                changeSurfacePolicy: "only src/payment/card.js may change; one-line card-type clause restoration",
+                recoveryPointSummary:
+                  "recovery-point-card-type restores the compose project file hash, the seeded image digest, and the flagd defaults",
+                changedSurfaces: ["src/payment/card.js"],
+                plannerTask: "plan the one-line card-type restoration for the accepted Hypothesis H1",
+              }),
+      runImplementer:
+        kit === null
+          ? async () => implementerDiffText()
+          : async () =>
+              kit.runImplementer({
+                incidentId,
+                runId,
+                attempt: 1,
+                baseRef,
+                changedFiles: ["src/payment/card.js"],
+                implementerTask: "apply the one-line card-type restoration in the copy-on-write worktree",
+                baseFiles: new Map(Object.entries(options.agentSeedFiles ?? {})),
+              }),
     })
-    const candidateHash = repair.detail
+    // The Orchestrator computed the candidate hash deterministically; the
+    // detail is the content hash the gate and reports bind to.
+    const candidateHash = repair.detail as HashString
     console.log(`[capture] repair sealed remediation-proposal candidate=${candidateHash}`)
 
     const repairEnv: ReceiptEnv = { incidentId, runId, leaseId: repairLease.leaseId, stage: "repair", candidateHash }
@@ -967,6 +1224,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     // 9. Verify: real test runs, receipts, review/test reports, deterministic verdict.
     const verifyLease = await issueLease("verify")
     const verifyProposals = inProcessProposals(cp, verifyLease)
+    kit?.bindStage(verifyProposals, verifyLease)
     await verifyProposals.stageCommand({ kind: "enter-stage", stage: "verify" })
     await verifyProposals.stageCommand({ kind: "stage-status", stage: "verify", to: "in-progress" })
 
@@ -1114,41 +1372,79 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await releaseAdapter.stopCandidate()
     console.log(`[capture] verify: isolated env checks done (T4=${probe4.ok}/${probe4.total}, T9=${probe9.ok}/${probe9.total}, T13 spans=${rehearsal.calls}, T12 ${drill.restored ? "ok" : "failed"})`)
 
-    // Seal the review and test reports bound to the candidate hash.
-    const reviewReports = buildReviewReports({
-      incidentId,
-      runId,
-      candidateHash,
-      seed: facts.seed,
-      recoveryPointHash,
-      diffHash: hashOf({ base: baseRef, diff: implementerDiffText() }),
-      baseRef,
-      metricId: ids.metricId,
-      r1Major: run === 2,
-    })
-    const testReports = buildTestReports({
-      incidentId,
-      runId,
-      candidateHash,
-      run2: run === 2,
-      t5Selection,
-      runsByLayer: {},
-    })
-    for (const report of reviewReports) {
-      await verifyProposals.sealArtifact({
-        schemaId: "review-report",
-        schemaVersion: "1.0",
-        payload: report as never,
-        producer: { skill: REVIEW_SKILL_BY_ROLE[report.role] ?? "sih-review", skill_version: "1.0" },
-      })
-    }
-    for (const report of testReports) {
-      await verifyProposals.sealArtifact({
-        schemaId: "test-report",
-        schemaVersion: "1.0",
-        payload: report as never,
-        producer: { skill: TEST_SKILL_BY_LAYER[report.layer] ?? "sih-test", skill_version: "1.0" },
-      })
+    // Seal the review and test reports bound to the candidate hash. Real-agent
+    // sessions sealed them through their terminal tools already.
+    const diffText = kit === null ? implementerDiffText() : kit.implementerDiffText()
+    const reviewReports = kit === null
+      ? buildReviewReports({
+          incidentId,
+          runId,
+          candidateHash,
+          seed: facts.seed,
+          recoveryPointHash,
+          diffHash: hashOf({ base: baseRef, diff: diffText }),
+          baseRef,
+          metricId: ids.metricId,
+          r1Major: run === 2,
+        })
+      : await kit.runReviews({
+          incidentId,
+          runId,
+          attempt: 1,
+          roles: ["R1", "R2", "R3", "R4", "R8"],
+          candidateHash,
+          hypothesis: hypotheses.h1.causal_claim.defect,
+          revisionId,
+          diffText,
+          changedFiles: ["src/payment/card.js"],
+          recoveryPointHash,
+          inputRefs: [ids.metricId, ids.codeLocationId, RECEIPT_IDS.pr],
+        })
+    const testReports = kit === null
+      ? buildTestReports({
+          incidentId,
+          runId,
+          candidateHash,
+          run2: run === 2,
+          t5Selection,
+          runsByLayer: {},
+        })
+      : await kit.runTests({
+          incidentId,
+          runId,
+          attempt: 1,
+          candidateHash,
+          diffText,
+          changedFiles: ["src/payment/card.js"],
+          layers: ["T1", "T2", "T3", "T4", "T5", "T7", "T9", "T10", "T12", "T13"],
+          runsByLayer: realTestRunsByLayer({
+            run,
+            candidateBuild,
+            t3Run,
+            t5Run,
+            probe4,
+            probe9,
+            rehearsal,
+            drill,
+          }),
+        })
+    if (kit === null) {
+      for (const report of reviewReports) {
+        await verifyProposals.sealArtifact({
+          schemaId: "review-report",
+          schemaVersion: "1.0",
+          payload: report as never,
+          producer: { skill: REVIEW_SKILL_BY_ROLE[report.role] ?? "sih-review", skill_version: "1.0" },
+        })
+      }
+      for (const report of testReports) {
+        await verifyProposals.sealArtifact({
+          schemaId: "test-report",
+          schemaVersion: "1.0",
+          payload: report as never,
+          producer: { skill: TEST_SKILL_BY_LAYER[report.layer] ?? "sih-test", skill_version: "1.0" },
+        })
+      }
     }
 
     // Deterministic verdict: the Control Plane computes it; no model votes.
@@ -1203,6 +1499,21 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         artifact_ref: verificationReportRef,
         candidate_hash: candidateHash,
       })
+      if (kit !== null) {
+        await sealRunEnd(kit, {
+          incidentId,
+          runId,
+          mode: options.mode ?? "full-capture",
+          stageOutcomes: {
+            detect: "completed",
+            diagnose: "completed",
+            repair: "completed",
+            verify: "failed",
+          },
+          runContext: runEndContext(run, candidateHash, "verification-failed"),
+        })
+        console.log(`[capture] orchestrator report + capture manifest sealed (failed run)`)
+      }
       await verifyProposals.failRun("verification-failed")
       console.log(`[capture] run failed: verification-failed (no Release record, no production Watch Report)`)
 
@@ -1222,6 +1533,8 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         receiptIds: cp.receipts(incidentId, runId).map((receipt) => receipt.receipt_id),
         artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
         stageRecords: cp.journal.state(incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
+        agents: kit === null ? "fixture" : "real",
+        manifestSealed: kit !== null,
       }
       await runtime.store.close()
       return report
@@ -1739,6 +2052,22 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       to: "completed",
       artifact_ref: confirmationSealed.artifact_ref,
     })
+    if (kit !== null) {
+      kit.bindStage(watchProposals, watchLease)
+      await sealRunEnd(kit, {
+        incidentId,
+        runId,
+        mode: options.mode ?? "full-capture",
+        stageOutcomes: {
+          detect: "completed",
+          diagnose: "completed",
+          repair: "completed",
+          verify: "completed",
+        },
+        runContext: runEndContext(run, candidateHash, "verified-remediation"),
+      })
+      console.log(`[capture] orchestrator report + capture manifest sealed (completed run)`)
+    }
     await watchProposals.completeRun("verified-remediation")
     console.log(`[capture] run completed: verified-remediation (incident resolved)`)
 
@@ -1764,6 +2093,8 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       receiptIds: cp.receipts(incidentId, runId).map((receipt) => receipt.receipt_id),
       artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
       stageRecords: finalState?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
+      agents: kit === null ? "fixture" : "real",
+      manifestSealed: kit !== null,
     }
     await runtime.store.close()
     return report
@@ -1778,4 +2109,52 @@ function stageOutcome(samples: Record<string, unknown>[]): "pass" | "fail" {
   return samples.every((sample) => (sample as { outcome?: string }).outcome === "pass")
     ? "pass"
     : "fail"
+}
+
+/** The end-of-run summary the Orchestrator role session reflects on. */
+function runEndContext(
+  run: 1 | 2,
+  candidateHash: HashString,
+  outcome: string,
+): string {
+  return [
+    `Run ${run} against the ${run === 1 ? "S1" : "S2"} seeded payment service.`,
+    `Candidate ${candidateHash} is a one-line card-type restoration in src/payment/card.js.`,
+    `The run ends ${outcome}; every gate verdict and receipt is recorded in the journal.`,
+    "The capture manifest freezes the provider, model, reasoning level, skill tree digest, tool catalog revision, policy revision, perspectives, seeds, budgets, schema versions, and every role session record.",
+  ].join("\n")
+}
+
+/** Run the end-of-run Orchestrator role session and, for full captures, seal
+ * the capture manifest, then leave the run to complete or fail. Rehearsal
+ * runs record no presentation manifest. */
+async function sealRunEnd(
+  kit: RealAgentKit,
+  options: {
+    incidentId: string
+    runId: string
+    stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string }
+    runContext: string
+    mode: "rehearsal" | "full-capture"
+  },
+): Promise<void> {
+  await kit.runOrchestrator({
+    incidentId: options.incidentId,
+    runId: options.runId,
+    attempt: 1,
+    stageOutcomes: options.stageOutcomes,
+    runContext: options.runContext,
+  })
+  // Rehearsal runs keep the orchestrator session but record no presentation
+  // manifest; full-capture runs seal the capture manifest artifact.
+  if (options.mode === "rehearsal") {
+    return
+  }
+  await kit.sealManifest({
+    incidentId: options.incidentId,
+    runId: options.runId,
+    attempt: 1,
+    mode: "full-capture",
+    scenario: options.runContext.split("\n")[0] ?? "payment charge failure",
+  })
 }

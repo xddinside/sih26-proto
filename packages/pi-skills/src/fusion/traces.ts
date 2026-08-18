@@ -25,6 +25,40 @@ export interface FusionPipelineCall {
   completionTokens: number
   startedAt: string
   durationMs: number
+  /** Model turns and non-terminal tool calls for a real Pi role session. */
+  turns?: number
+  toolCalls?: number
+}
+
+/** One participant's perspective, in its configured order. */
+export interface FusionPerspective {
+  participantId: string
+  perspective: string
+  order: number
+}
+
+/** Aggregate session metrics for a real-agent Fusion round. */
+export interface FusionRunMetrics {
+  participants: {
+    participantId: string
+    status: "succeeded" | "failed" | "aborted"
+    turns: number
+    toolCalls: number
+    durationMs: number
+  }[]
+  judge: {
+    status: "succeeded" | "failed" | "aborted"
+    turns: number
+    toolCalls: number
+    durationMs: number
+  } | null
+  synthesizer: {
+    status: "succeeded" | "failed" | "aborted"
+    turns: number
+    toolCalls: number
+    durationMs: number
+  } | null
+  totalWallClockMs: number
 }
 
 export interface FusionRunArtifact {
@@ -43,6 +77,10 @@ export interface FusionRunArtifact {
    */
   excludeFromContext: true
   sealedAt: string
+  /** Participant perspectives in their configured order. */
+  perspectives?: FusionPerspective[]
+  /** Aggregate session metrics for real-agent rounds. */
+  metrics?: FusionRunMetrics
 }
 
 export function emptyFusionRunArtifact(

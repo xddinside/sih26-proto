@@ -33,6 +33,7 @@ import { assembleVerdictInput, consolidateReviews } from "../consolidation.js"
 import type { Contradiction } from "../consolidation.js"
 import { runFusionRound } from "../fusion/fusion-runtime.js"
 import type { FusionRoundResult } from "../fusion/fusion-runtime.js"
+import type { RealFusionRoundOptions } from "../fusion/fusion-real.js"
 import { buildLaterContext } from "../fusion/traces.js"
 import type { FusionRunArtifact } from "../fusion/traces.js"
 import {
@@ -577,6 +578,20 @@ export class PiOrchestratorExtension {
       }[]
     ) => Promise<{ newRevisionId: string; newItems: readonly EvidenceItem[] }>
     onRound?: (round: FusionRoundResult) => void
+    /** Real-agent mode: replaces the deterministic skill session with a
+     * real Pi role session runner. Receives everything the round needs. */
+    runFusionRound?: (options: {
+      round: number
+      revisionId: string
+      task: string
+      brief?: string
+      participantIds: string[]
+      /** Perspectives per participant; the runner may supply its own. */
+      participantPerspectives?: string[]
+      judgeId: string
+      synthesizerId: string
+      parentAgentId: string
+    }) => Promise<FusionRoundResult>
   }): Promise<StageOutcome> {
     await this.enterStage("diagnose")
     const { runtime } = this.options
@@ -600,21 +615,33 @@ export class PiOrchestratorExtension {
       if (!budget.allowed) {
         throw new OrchestratorError("ROUND_CAP", "fusion round cap exhausted")
       }
-      const result = await runFusionRound({
-        round,
-        revisionId,
-        task: options.task,
-        brief: options.brief,
-        config: options.fusionConfig,
-        skillsRoot: runtime.skillsRoot,
-        scratchRoot: this.scratchRoot(),
-        parentAgentId: `orchestrator-${runtime.checkpoint.runId}`,
-        gateway: this.options.gateway,
-        lease: this.options.lease,
-        activeTools,
-        demoProfile: options.demoProfile,
-        signal: this.options.signal,
-      })
+      const result =
+        options.runFusionRound === undefined
+          ? await runFusionRound({
+              round,
+              revisionId,
+              task: options.task,
+              brief: options.brief,
+              config: options.fusionConfig,
+              skillsRoot: runtime.skillsRoot,
+              scratchRoot: this.scratchRoot(),
+              parentAgentId: `orchestrator-${runtime.checkpoint.runId}`,
+              gateway: this.options.gateway,
+              lease: this.options.lease,
+              activeTools,
+              demoProfile: options.demoProfile,
+              signal: this.options.signal,
+            })
+          : await options.runFusionRound({
+              round,
+              revisionId,
+              task: options.task,
+              brief: options.brief,
+              participantIds: options.fusionConfig.participantIds,
+              judgeId: options.fusionConfig.judgeId,
+              synthesizerId: options.fusionConfig.synthesizerId,
+              parentAgentId: `orchestrator-${runtime.checkpoint.runId}`,
+            })
       this.fusionRounds.push(result)
       options.onRound?.(result)
       if (!result.valid) {

@@ -4,6 +4,14 @@
  * individual schema modules) rather than hand-writing them.
  */
 export type { ArtifactEnvelope } from "./schemas/artifact-envelope.js";
+export type {
+  AgentRoleName,
+  CaptureManifest,
+  CaptureManifestRoleRecord,
+  ImplementedDiff,
+  OrchestratorReport,
+  RemediationDraft,
+} from "./schemas/agent.js";
 export type { BrokerReceipt } from "./schemas/broker-receipt.js";
 export type { EvidenceItem, EvidenceSet } from "./schemas/evidence.js";
 export type { GateEvaluation } from "./schemas/gate-evaluation.js";

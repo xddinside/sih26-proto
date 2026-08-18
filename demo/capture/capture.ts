@@ -5,12 +5,20 @@
  *   bun run demo/capture/capture.ts export --run 1|2 export the captured run
  *   bun run demo/capture/capture.ts finalize         assemble + verify the bundle
  *   bun run demo/capture/capture.ts verify           re-verify demo/saved-runs
+ *   bun run demo/capture/capture.ts store            list the dev store
+ *   bun run demo/capture/capture.ts present          assemble the presentation
+ *
+ * Real-agent captures (issue #23): `--agents=real` drives Pi role sessions
+ * through the Model Gateway for Fusion, repair, review, test, and
+ * orchestrator roles; `--mode=rehearsal|full` marks the run; every real
+ * capture appends to the dev store, and `present` requires three consecutive
+ * full-capture real runs under one unchanged configuration digest.
  *
  * The capture drives the real reduced Compose profile (payment:seeded image,
  * pinned rule, charge driver) to source the real firing numbers, then drives
  * the real Control Plane + Worker end to end. See README.md.
  */
-import { mkdir, readdir, rm, writeFile, readFile } from "node:fs/promises"
+import { mkdir, readdir, rm, writeFile, readFile, cp } from "node:fs/promises"
 import { join } from "node:path"
 
 import { bootstrap } from "@sih/control-plane/src/bootstrap.js"
@@ -33,11 +41,20 @@ import {
   SAVED_INCIDENT_1,
   SAVED_INCIDENT_2,
 } from "./src/constants.js"
+import {
+  DEV_STORE_FILE,
+  DEV_STORE_ROOT,
+  appendCaptureRecord,
+  configDigestOf,
+  listCaptureRecords,
+} from "./src/dev-store.js"
 import { driveCapture, driverLogPath, liveReadAdapters } from "./src/driver.js"
-import type { CaptureReport } from "./src/driver.js"
+import type { CaptureReport, RealCaptureAgent } from "./src/driver.js"
 import { assembleIncident, buildManifest, listBundle, savedRunsRoot, stagingDir, verifyBundle, writeBundle } from "./src/export.js"
 import type { ExportRunner } from "./src/export.js"
+import { assemblePresentation, presentFromStore } from "./src/presentation.js"
 import type { CaptureFacts } from "./src/payloads.js"
+import { seededCardJs } from "./src/worktree-seed.js"
 import * as shop from "./src/shop.js"
 import { hashOf } from "./src/receipts.js"
 
@@ -290,7 +307,16 @@ async function verifyOnly(): Promise<void> {
   console.log(`[verify] demo/saved-runs passes all integrity checks (${verified.value.incidents.length} incidents, ${verified.value.artifacts.size} artifacts)`)
 }
 
-async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline: boolean; offline: boolean }): Promise<void> {
+async function captureRun(run: 1 | 2, options: {
+  demoRepo: string
+  skipBaseline: boolean
+  offline: boolean
+  agents: "fixture" | "real"
+  mode: "rehearsal" | "full-capture"
+  provider: string
+  model: string
+  reasoning: string
+}): Promise<void> {
   // Long-running phases; leases and permits must not expire mid-stage.
   process.env.SIH_LEASE_TTL_SECONDS = "7200"
   process.env.SIH_PERMIT_TTL_SECONDS = "3600"
@@ -346,6 +372,24 @@ async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline:
     }
   }
 
+  // Real-agent runs derive the implementer's base files from the demo repo
+  // when present, and fall back to the recorded seeded state offline.
+  const agentSeedFiles: Record<string, string> = {}
+  if (options.agents === "real") {
+    if (options.offline) {
+      agentSeedFiles["src/payment/card.js"] = seededCardJs(run === 1 ? "S1" : "S2")
+    } else {
+      const demoRepo = options.demoRepo
+      if (!demoRepoExists(demoRepo)) {
+        throw new Error(`demo repo missing at ${demoRepo}; real-agent implementer needs the seeded sources`)
+      }
+      agentSeedFiles["src/payment/card.js"] = await readFile(
+        join(demoRepo, "src/payment/card.js"),
+        "utf8",
+      )
+    }
+  }
+
   const config = loadConfig()
   const report: CaptureReport = await driveCapture(
     {
@@ -354,6 +398,21 @@ async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline:
       alert,
       offline: options.offline,
       savedId,
+      agents: options.agents,
+      mode: options.mode,
+      agent:
+        options.agents === "real"
+          ? {
+              provider: options.provider,
+              model: options.model,
+              reasoning: options.reasoning as RealCaptureAgent["reasoning"],
+              perspectives: [
+                { participantId: "p-1", order: 1, perspective: "code-level defect hunt: trace the failing charge path from the error text and the seeded diff" },
+                { participantId: "p-2", order: 2, perspective: "system-level causation: weigh runtime telemetry, flagd state, and the pre-seed baseline" },
+              ],
+            }
+          : undefined,
+      agentSeedFiles,
       readAdapters: liveReadAdapters({
         errorRatio: facts.firingRatio,
         callsPerSecond: facts.firingCallsPerSecond,
@@ -370,6 +429,7 @@ async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline:
   console.log(`[capture] gates: ${report.gateVerdicts.join(", ")}`)
   console.log(`[capture] stages: ${report.stageRecords.join(" -> ")}`)
   console.log(`[capture] final sequence: ${report.finalSequence}`)
+  console.log(`[capture] agents: ${report.agents} manifestSealed: ${report.manifestSealed}`)
 
   await mkdir(stagingDir(run), { recursive: true })
   await writeFile(
@@ -384,6 +444,9 @@ async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline:
         failureReason: report.failureReason,
         candidateHash: report.candidateHash,
         offline: options.offline,
+        agents: report.agents,
+        mode: options.mode,
+        manifestSealed: report.manifestSealed,
         capturedAt: new Date().toISOString(),
       },
       null,
@@ -391,6 +454,43 @@ async function captureRun(run: 1 | 2, options: { demoRepo: string; skipBaseline:
     ),
     "utf8",
   )
+
+  // Real captures append to the dev store; fixture runs never enter it.
+  if (report.agents === "real") {
+    const capturedAt = new Date().toISOString()
+    const runPath = join("runs", `${capturedAt.replace(/[:.]/g, "-")}-${savedId}`)
+    await mkdir(join(DEV_STORE_ROOT, runPath), { recursive: true })
+    await cp(stagingDir(run), join(DEV_STORE_ROOT, runPath), { recursive: true })
+    await appendCaptureRecord({
+      version: 1,
+      run,
+      scenario: run === 1 ? "S1" : "S2",
+      agents: "real",
+      mode: options.mode,
+      provider: options.provider,
+      model: options.model,
+      reasoning: options.reasoning,
+      capturedAt,
+      savedId,
+      incidentId: report.incidentId,
+      finalSequence: report.finalSequence,
+      finalRunState: report.finalRunState,
+      outcome: report.outcome,
+      candidateHash: report.candidateHash,
+      manifestSealed: report.manifestSealed,
+      configDigest: configDigestOf({
+        run,
+        scenario: run === 1 ? "S1" : "S2",
+        agents: "real",
+        mode: options.mode,
+        provider: options.provider,
+        model: options.model,
+        reasoning: options.reasoning,
+      }),
+      runPath,
+    })
+    console.log(`[capture] dev store: appended ${savedId} (${options.mode})`)
+  }
 
   if (!options.offline) {
     await stopDriver()
@@ -489,10 +589,38 @@ async function main(): Promise<void> {
   if (command === "run") {
     const run = Number(flagValue("--run") ?? "0")
     if (run !== 1 && run !== 2) {
-      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline]")
+      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline] [--agents fixture|real] [--mode rehearsal|full] [--provider slug] [--model id] [--reasoning off|low|medium|high]")
       process.exit(2)
     }
-    await captureRun(run as 1 | 2, { demoRepo, skipBaseline: args.includes("--skip-baseline"), offline: args.includes("--offline") })
+    const agents = (flagValue("--agents") ?? "fixture") as "fixture" | "real"
+    if (agents !== "fixture" && agents !== "real") {
+      console.error("--agents must be fixture or real")
+      process.exit(2)
+    }
+    const mode = (flagValue("--mode") ?? "full-capture") as "rehearsal" | "full-capture"
+    if (mode !== "rehearsal" && mode !== "full-capture") {
+      console.error("--mode must be rehearsal or full")
+      process.exit(2)
+    }
+    if (agents === "real" && mode === "full-capture" && (process.env.OPENCODE_API_KEY ?? "").trim().length === 0) {
+      console.error("--agents=real requires OPENCODE_API_KEY")
+      process.exit(2)
+    }
+    const reasoning = flagValue("--reasoning") ?? "medium"
+    if (reasoning !== "off" && reasoning !== "low" && reasoning !== "medium" && reasoning !== "high") {
+      console.error("--reasoning must be off, low, medium, or high")
+      process.exit(2)
+    }
+    await captureRun(run as 1 | 2, {
+      demoRepo,
+      skipBaseline: args.includes("--skip-baseline"),
+      offline: args.includes("--offline"),
+      agents,
+      mode,
+      provider: flagValue("--provider") ?? "opencode",
+      model: flagValue("--model") ?? "deepseek-v4-flash",
+      reasoning,
+    })
     return
   }
   if (command === "export") {
@@ -512,7 +640,28 @@ async function main(): Promise<void> {
     await verifyOnly()
     return
   }
-  console.error("usage: capture.ts {run --run 1|2 | export --run 1|2 | finalize | verify}")
+  if (command === "store") {
+    const records = await listCaptureRecords()
+    console.log(`[capture] dev store: ${DEV_STORE_FILE} (${records.length} records)`)
+    for (const record of records) {
+      console.log(
+        `  ${record.capturedAt} ${record.run} ${record.scenario} ${record.agents} ${record.mode} ${record.provider}/${record.model} state=${record.finalRunState} outcome=${record.outcome ?? "-"} manifest=${record.manifestSealed ? "sealed" : "none"} digest=${record.configDigest.slice(0, 12)}`,
+      )
+    }
+    return
+  }
+  if (command === "present") {
+    const result = await presentFromStore()
+    if (result === null) {
+      console.error("[capture] present: no presentation streak (three consecutive full-capture real runs, unchanged config, both scenarios)")
+      process.exit(1)
+    }
+    console.log(`[capture] present: streak started ${result.streakStartedAt}`)
+    console.log(`[capture] present: incidents ${result.incidentIds.join(", ")}`)
+    console.log(`[capture] present: ${result.artifacts} artifacts; bundle at ${savedRunsRoot()}`)
+    return
+  }
+  console.error("usage: capture.ts {run --run 1|2 | export --run 1|2 | finalize | verify | store | present}")
   process.exit(2)
 }
 

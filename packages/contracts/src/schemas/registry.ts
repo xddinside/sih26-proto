@@ -9,6 +9,12 @@
  */
 import type { JsonValue } from "../result.js";
 
+import {
+  captureManifestSchema,
+  implementedDiffSchema,
+  orchestratorReportSchema,
+  remediationDraftSchema,
+} from "./agent.js";
 import { artifactEnvelopeSchema } from "./artifact-envelope.js";
 import { brokerReceiptSchema } from "./broker-receipt.js";
 import { evidenceItemSchema, evidenceSetSchema } from "./evidence.js";
@@ -86,6 +92,10 @@ export const SCHEMA_REGISTRY = {
   "evidence-hash-input": versionMap(evidenceHashInputSchema),
   "incident-key-input": versionMap(incidentKeyInputSchema),
   "delivery-key-input": versionMap(deliveryKeyInputSchema),
+  "remediation-draft": versionMap(remediationDraftSchema),
+  "implemented-diff": versionMap(implementedDiffSchema),
+  "orchestrator-report": versionMap(orchestratorReportSchema),
+  "capture-manifest": versionMap(captureManifestSchema),
 } as const;
 
 /** The names of every registered schema. */
