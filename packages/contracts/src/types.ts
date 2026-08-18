@@ -13,6 +13,8 @@ export type {
   RemediationDraft,
 } from "./schemas/agent.js";
 export type { BrokerReceipt } from "./schemas/broker-receipt.js";
+export { AGENT_PHASE } from "./schemas/agent-run.js";
+export type { AgentPhase, AgentPipelineCall, AgentRunArtifactWire } from "./schemas/agent-run.js";
 export type { EvidenceItem, EvidenceSet } from "./schemas/evidence.js";
 export type { GateEvaluation } from "./schemas/gate-evaluation.js";
 export type {

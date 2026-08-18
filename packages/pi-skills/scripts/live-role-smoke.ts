@@ -96,6 +96,7 @@ async function main(): Promise<void> {
     agentId: "agent-live-smoke",
     parentAgentId: "run-live-smoke",
     agentRole: "sih-fusion-participant",
+    phase: "participant",
     systemPrompt:
       "You are a bounded Fusion participant in the SIH incident workflow. " +
       "Use read_broker_query to gather evidence with at least two distinct queries. " +

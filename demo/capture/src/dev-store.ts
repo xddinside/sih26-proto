@@ -28,6 +28,9 @@ export interface StoredCaptureRecord {
   outcome: string | null
   candidateHash: string | null
   manifestSealed: boolean
+  /** How many agent-run-artifacts the run sealed (every session attempt,
+   * including failed and aborted ones). */
+  agentRunArtifacts: number
   /** Hash of every configuration value that must be frozen across the
    * three-run streak. */
   configDigest: string

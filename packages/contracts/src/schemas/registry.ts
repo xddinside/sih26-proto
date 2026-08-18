@@ -15,6 +15,7 @@ import {
   orchestratorReportSchema,
   remediationDraftSchema,
 } from "./agent.js";
+import { agentRunArtifactSchema } from "./agent-run.js";
 import { artifactEnvelopeSchema } from "./artifact-envelope.js";
 import { brokerReceiptSchema } from "./broker-receipt.js";
 import { evidenceItemSchema, evidenceSetSchema } from "./evidence.js";
@@ -98,6 +99,7 @@ export const SCHEMA_REGISTRY = {
   "implemented-diff": versionMap(implementedDiffSchema),
   "orchestrator-report": versionMap(orchestratorReportSchema),
   "capture-manifest": versionMap(captureManifestSchema),
+  "agent-run-artifact": versionMap(agentRunArtifactSchema),
 } as const;
 
 /** The names of every registered schema. */

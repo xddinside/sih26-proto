@@ -478,6 +478,7 @@ async function captureRun(run: 1 | 2, options: {
       outcome: report.outcome,
       candidateHash: report.candidateHash,
       manifestSealed: report.manifestSealed,
+      agentRunArtifacts: report.agentRunArtifacts,
       configDigest: configDigestOf({
         run,
         scenario: run === 1 ? "S1" : "S2",

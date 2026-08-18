@@ -119,6 +119,7 @@ interface HarnessOptions {
   limits?: { maxModelTurns?: number; maxNonTerminalToolCalls?: number; maxDurationMs?: number }
   signal?: AbortSignal
   gateway?: ModelGateway
+  secrets?: string[]
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -161,6 +162,7 @@ function makeHarness(options: HarnessOptions = {}) {
     agentId: "agent-1",
     parentAgentId: "run-1",
     agentRole: "sih-fusion-participant",
+    phase: "participant",
     systemPrompt: "You are a bounded Fusion participant.",
     model: { provider: "opencode-go", id: "deepseek-v4-flash" },
     reasoning: "high",
@@ -172,6 +174,7 @@ function makeHarness(options: HarnessOptions = {}) {
     authority,
     limits: options.limits,
     signal: options.signal,
+    secrets: options.secrets,
   })
   return { session, cp, terminal, submitted, readTool, gateway }
 }
@@ -316,6 +319,7 @@ describe("PiRoleSession", () => {
       agentId: "agent-1",
       parentAgentId: "run-1",
       agentRole: "sih-fusion-participant",
+      phase: "participant",
       systemPrompt: "You are a bounded Fusion participant.",
       model: { provider: "opencode-go", id: "deepseek-v4-flash" },
       lease,
@@ -491,3 +495,207 @@ describe("PiRoleSession", () => {
     expect(containsNoSecrets(serialized, [SECRET])).toBe(true)
   })
 })
+
+/** A streaming double that emits a thinking block, a secret-bearing text
+ * turn, and then a terminal tool call. */
+function thinkingStreamingProvider(): GatewayStreamingProvider {
+  const callCounts = new Map<string, number>()
+  return (request, { model }) => {
+    const stream = createAssistantMessageEventStream()
+    void (async () => {
+      const count = callCounts.get(request.agentId) ?? 0
+      callCounts.set(request.agentId, count + 1)
+      const think: AssistantMessage = {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "the hidden reasoning", redacted: false },
+          { type: "toolCall", id: "call-t1", name: READ_TOOL_NAME, arguments: readArgs() },
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 12,
+          output: 8,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 20,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      }
+      const reveal: AssistantMessage = {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-t2",
+            name: READ_TOOL_NAME,
+            arguments: {
+              backend: "prometheus",
+              connection_id: "c1",
+              query: `authorization: Bearer ${SECRET}`,
+            },
+          },
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 12,
+          output: 8,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 20,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      }
+      const finish: AssistantMessage = {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-t3",
+            name: TERMINAL_TOOL_NAME,
+            arguments: { submission: validSubmission() },
+          },
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 12,
+          output: 8,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 20,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      }
+      const turns = [think, reveal, finish]
+      const message = turns[Math.min(count, turns.length - 1)] ?? finish
+      stream.push({ type: "start", partial: message })
+      if (message.stopReason === "toolUse") {
+        const toolCall = message.content[0] as Extract<
+          AssistantMessage["content"][number],
+          { type: "toolCall" }
+        >
+        stream.push({ type: "toolcall_start", contentIndex: 0, partial: message })
+        stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(toolCall.arguments), partial: message })
+        stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message })
+        stream.push({ type: "done", reason: "toolUse", message })
+      } else {
+        stream.push({ type: "text_start", contentIndex: 0, partial: message })
+        const text = message.content[0] as { type: "text"; text: string }
+        stream.push({ type: "text_delta", contentIndex: 0, delta: text.text, partial: message })
+        stream.push({ type: "text_end", contentIndex: 0, content: text.text, partial: message })
+        stream.push({ type: "done", reason: "stop", message })
+      }
+      stream.end(message)
+    })()
+    return stream
+  }
+}
+
+describe("PiRoleSession run artifact", () => {
+  test("a succeeded session settles a complete artifact", async () => {
+    const { session } = makeHarness({ turns: happyTurns() })
+    const result = await session.run("Investigate and finish.")
+    const artifact = result.artifact
+
+    expect(artifact.phase).toBe("participant")
+    expect(artifact.agent_id).toBe("agent-1")
+    expect(artifact.parent_agent_id).toBe("run-1")
+    expect(artifact.provider_class).toBe("real")
+    expect(artifact.provider).toBe("opencode-go")
+    expect(artifact.model).toBe("deepseek-v4-flash")
+    expect(artifact.reasoning).toBe("high")
+    expect(artifact.status).toBe("succeeded")
+    expect(artifact.failure_reason).toBeNull()
+    expect(artifact.exclude_from_context).toBe(true)
+    expect(artifact.sealed_at).toBeDefined()
+
+    const call = artifact.calls[0]
+    expect(call).toBeDefined()
+    expect(call.call_id).toBe("call:agent-1:0")
+    expect(call.order).toBe(0)
+    expect(call.phase).toBe("participant")
+    expect(call.role).toBe("sih-fusion-participant")
+    expect(call.status).toBe("succeeded")
+    expect(call.submission_ref).toBe("sub-1")
+    expect(call.turns).toBe(3)
+    expect(call.tool_activity.map((a) => a.tool_call_id)).toEqual(["call-1", "call-2"])
+    expect(call.tool_activity.map((a) => a.tool)).toEqual([READ_TOOL_NAME, READ_TOOL_NAME])
+    expect(call.retry_delay_ms).toBeNull()
+    expect(call.rate_limit_delay_ms).toBeNull()
+
+    expect(artifact.metrics.duration_ms).toBe(Date.parse(call.completed_at) - Date.parse(call.started_at))
+    expect(artifact.metrics.prompt_tokens).toBe(call.token_use.prompt_tokens)
+    expect(artifact.metrics.completion_tokens).toBe(call.token_use.completion_tokens)
+    expect(artifact.metrics.total_tokens).toBe(call.token_use.total_tokens)
+    expect(artifact.metrics.tool_call_count).toBe(call.tool_activity.length)
+  })
+
+  test("the artifact excludes hidden reasoning and scrubs secrets", async () => {
+    const cp = new FakeControlPlaneClient()
+    cp.leases.add("lease-test-1")
+    const gateway = new ModelGateway(cp, undefined, thinkingStreamingProvider(), SECRET)
+    const { session } = makeHarness({ gateway })
+    const result = await session.run("Investigate and finish.")
+
+    expect(result.status).toBe("succeeded")
+    const serialized = JSON.stringify(result.artifact)
+    expect(serialized).not.toContain("the hidden reasoning")
+    expect(serialized).not.toContain(SECRET)
+    expect(serialized).not.toContain("authorization: Bearer")
+    expect(containsNoSecrets(serialized, [SECRET])).toBe(true)
+
+    const call = result.artifact.calls[0]
+    expect(call.tool_activity.map((a) => a.tool_call_id)).toEqual(["call-t1", "call-t2"])
+    expect(call.output).toBeNull()
+    const secretTurn = call.tool_activity[1]
+    expect(secretTurn.args).not.toContain(SECRET)
+    expect(secretTurn.args).toContain("[REDACTED]")
+    expect(secretTurn.result).not.toContain(SECRET)
+  })
+
+  test("a failed session settles a failed artifact with no submission", async () => {
+    const { session } = makeHarness({
+      turns: [{ kind: "error", message: "provider exploded", stopReason: "error" }],
+    })
+    const result = await session.run("Go.")
+
+    expect(result.status).toBe("failed")
+    const artifact = result.artifact
+    expect(artifact.status).toBe("failed")
+    expect(artifact.failure_reason).toContain("no terminal submission")
+    const call = artifact.calls[0]
+    expect(call.status).toBe("failed")
+    expect(call.failure_reason).toContain("no terminal submission")
+    expect(call.submission_ref).toBeNull()
+    expect(call.turns).toBe(1)
+    expect(call.tool_activity).toHaveLength(0)
+  })
+
+  test("an aborted session settles an aborted artifact", async () => {
+    const cp = new FakeControlPlaneClient()
+    cp.leases.add("lease-test-1")
+    const gateway = new ModelGateway(cp, undefined, slowStreamingProvider(), undefined)
+    const { session } = makeHarness({ gateway })
+    const running = session.run("Go.")
+    await Bun.sleep(30)
+    session.abort()
+    const result = await running
+
+    expect(result.status).toBe("aborted")
+    expect(result.artifact.status).toBe("aborted")
+    expect(result.artifact.calls[0].submission_ref).toBeNull()
+    expect(result.artifact.calls[0].status).toBe("aborted")
+  })
+})
+

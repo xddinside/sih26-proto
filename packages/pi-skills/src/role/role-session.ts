@@ -27,23 +27,37 @@ import type {
   streamSimple,
 } from "@earendil-works/pi-ai"
 import type { ModelGateway, GatewayStreamRequest, LeaseRef  } from "@sih/brokers"
+import type { AGENT_PHASE, AgentRunArtifactWire } from "@sih/contracts/types"
 
 import { DEFAULT_ROLE_LIMITS  } from "./limits.js"
 import type {RoleLimits} from "./limits.js";
 import { effectiveToolSet  } from "./authority.js"
 import type {ToolAuthority} from "./authority.js";
 import type { TerminalTool } from "./terminal-tools.js"
+import { buildAgentRunArtifact } from "./run-artifact.js"
 
 export class RoleSessionError extends Error {}
+
+/** The capture-vocabulary phases a session can belong to, derived from the
+ * registered agent-run-artifact schema so the two cannot drift apart. */
+export type RoleSessionPhase = (typeof AGENT_PHASE)["enum"][number]
 
 export interface RoleSessionOptions {
   agentId: string
   parentAgentId: string
   agentRole: string
+  /** The capture-vocabulary phase this session's artifact records. */
+  phase: RoleSessionPhase
   systemPrompt: string
   /** The provider and model slug, e.g. `opencode-go` / `deepseek-v4-flash`. */
   model: { provider: string; id: string }
+  /** The provider API name when reported, e.g. `opencode-go`. */
+  providerApi?: string
   reasoning?: ThinkingLevel
+  /** Whether the session runs against a live provider or a fixture. */
+  providerClass?: "real" | "fixture"
+  /** Extra secrets the session must scrub from its records. */
+  secrets?: readonly string[]
   lease: LeaseRef
   /** The only inference path; the session never holds a provider key. */
   gateway: ModelGateway
@@ -68,6 +82,8 @@ export interface RoleSessionResult {
   failureReason?: string
   /** The final transcript: assistant turns and tool results. */
   messages: AgentMessage[]
+  /** The registered agent-run-artifact payload for this session. */
+  artifact: AgentRunArtifactWire
 }
 
 export class PiRoleSession {
@@ -141,13 +157,38 @@ export class PiRoleSession {
       this.loopError = error instanceof Error ? error : new Error(String(error))
     }
 
+    const completedAtMs = Date.now()
+    const status = this.classifyStatus()
+    const failureReason = this.loopError?.message ?? this.budgetReason()
     return {
-      status: this.classifyStatus(),
+      status,
       turns: this.turnCount,
       toolCalls: this.nonTerminalCalls,
       terminalSubmission: this.options.terminalTool.submission,
-      failureReason: this.loopError?.message ?? this.budgetReason(),
+      failureReason,
       messages: transcript,
+      artifact: buildAgentRunArtifact({
+        agentId: this.options.agentId,
+        parentAgentId: this.options.parentAgentId,
+        agentRole: this.options.agentRole,
+        phase: this.options.phase,
+        providerClass: this.options.providerClass ?? "real",
+        provider: this.options.model.provider,
+        model: this.options.model.id,
+        providerApi: this.options.providerApi,
+        reasoning: this.options.reasoning ?? "high",
+        systemPrompt: this.options.systemPrompt,
+        promptText,
+        status,
+        failureReason,
+        submissionId: this.options.terminalTool.submission?.submissionId ?? null,
+        startedAtMs: this.startedAt,
+        completedAtMs,
+        turnCount: this.turnCount,
+        messages: transcript,
+        terminalToolName: this.options.terminalTool.tool.name,
+        secrets: this.options.secrets,
+      }),
     }
   }
 

@@ -30,6 +30,7 @@ function record(partial: Partial<StoredCaptureRecord> & Pick<StoredCaptureRecord
     outcome: partial.run === 1 ? "verified-remediation" : null,
     candidateHash: null,
     manifestSealed: true,
+    agentRunArtifacts: 3,
     configDigest: "config-digest-a",
     runPath: "runs/run",
   }

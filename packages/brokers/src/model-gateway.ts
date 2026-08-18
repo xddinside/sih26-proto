@@ -276,7 +276,7 @@ function modelUseRecord(
     },
     tool_calls: message.content
       .filter((block): block is Extract<typeof block, { type: "toolCall" }> => block.type === "toolCall")
-      .map((call) => ({ id: call.id, name: call.name })),
+      .map((call) => ({ tool: call.name, tool_call_id: call.id })),
     idempotency_key: request.idempotencyKey,
     started_at: startedAt,
     completed_at: new Date().toISOString(),

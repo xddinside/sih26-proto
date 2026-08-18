@@ -375,6 +375,7 @@ export class RealAgentKit {
       status: session.status,
       ...(session.submissionId === undefined ? {} : { submission_id: session.submissionId }),
       ...(session.submissionId === undefined ? {} : { artifact_ref: session.submissionId }),
+      ...(session.runArtifactRef === undefined ? {} : { run_artifact_ref: session.runArtifactRef }),
       model_use_agent_ids: session.modelUseAgentIds,
     }))
   }

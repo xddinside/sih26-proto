@@ -31,6 +31,7 @@ import {
   TEST_SYSTEM_PROMPT,
 } from "../prompts.js"
 import { PiRoleSession } from "../role/role-session.js"
+import type { RoleSessionPhase } from "../role/role-session.js"
 import type { RoleLimits } from "../role/limits.js"
 import { createReadTool } from "../role/broker-tools.js"
 import { createTerminalTool } from "../role/terminal-tools.js"
@@ -59,6 +60,8 @@ export interface AgentSessionRecord {
   agentId: string
   status: "succeeded" | "failed" | "aborted"
   submissionId?: string
+  /** The sealed agent-run-artifact hash for this session. */
+  runArtifactRef?: string
   modelUseAgentIds: string[]
   turns: number
   toolCalls: number
@@ -140,6 +143,7 @@ async function runRoleSession<T>(
     agentId: options.agentId,
     parentAgentId: options.parentAgentId ?? options.agentId,
     agentRole: options.roleLabel,
+    phase: options.roleName as RoleSessionPhase,
     systemPrompt: options.systemPrompt,
     model: options.kit.model,
     reasoning: options.kit.reasoning,
@@ -160,6 +164,12 @@ async function runRoleSession<T>(
   const result = await session.run(options.promptText)
   const status = result.status
   const payload = status === "succeeded" ? (capturedPayload as T | null) : null
+  const sealedRun = await options.kit.seal.seal({
+    schemaId: "agent-run-artifact",
+    schemaVersion: "1.0",
+    payload: result.artifact,
+    producer: { skill: options.skill, skill_version: "1.0" },
+  })
   const record: AgentSessionRecord = {
     role: options.roleName,
     agentId: options.agentId,
@@ -168,6 +178,7 @@ async function runRoleSession<T>(
     toolCalls: result.toolCalls,
     durationMs: Date.now() - started,
     modelUseAgentIds: [options.agentId],
+    runArtifactRef: sealedRun.content_hash,
   }
   if (submissionId !== undefined) {
     record.submissionId = submissionId

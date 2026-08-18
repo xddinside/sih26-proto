@@ -4,7 +4,7 @@
  * authorization header. This helper scrubs both from any text before it
  * leaves the session.
  */
-const AUTHORIZATION_PATTERN = /authorization:\s*[^\s,;]+/gi
+const AUTHORIZATION_PATTERN = /authorization:\s*(?:bearer\s+)?[^\s,;]+/gi
 const BEARER_PATTERN = /bearer\s+[^\s,;]+/gi
 
 /** Replace every known secret and provider authorization header in `text`. */

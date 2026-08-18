@@ -26,6 +26,8 @@ import { normalizeSavedPath, validatePaths } from "./paths.js";
 import { reduceJournalEvents, verifyJournalSequence } from "./journal.js";
 import { classifySchema } from "./schemas/registry.js";
 import { TERMINAL_SCHEMA_BY_ROLE } from "./schemas/agent.js";
+import type { AgentRoleName } from "./schemas/agent.js";
+import type { AgentRunArtifactWire } from "./schemas/agent-run.js";
 import type { ArtifactEnvelope } from "./schemas/artifact-envelope.js";
 import type { JournalEvent } from "./schemas/journal-event.js";
 import type { SavedBundleManifest } from "./schemas/saved-bundle-manifest.js";
@@ -80,6 +82,10 @@ function scopedReferenceKey(
   reference: string,
 ): string {
   return `${incidentId}\u0000${runId ?? ""}\u0000${reference}`;
+}
+
+function incidentRunKey(incidentId: string, runId: string | undefined): string {
+  return `${incidentId}\u0000${runId ?? ""}`;
 }
 
 function utf8Size(value: string): number {
@@ -167,6 +173,7 @@ export function verifySavedBundle(
   const incidentIds = new Set<string>();
   const artifactReferences: ArtifactReferenceContext[] = [];
   const recordedReceiptKeys = new Set<string>();
+  const journalSealedKeys = new Set<string>();
   for (const entry of manifest.incident_ids) {
     incidentIds.add(entry.incident_id);
     const journalPath = `incidents/${entry.incident_id}/journal.jsonl`;
@@ -273,6 +280,9 @@ export function verifySavedBundle(
           source: "artifact-sealed",
         });
         sealedArtifacts.add(
+          scopedReferenceKey(entry.incident_id, runId, event.artifact_ref.content_hash),
+        );
+        journalSealedKeys.add(
           scopedReferenceKey(entry.incident_id, runId, event.artifact_ref.content_hash),
         );
       }
@@ -566,12 +576,22 @@ export function verifySavedBundle(
   // carries one, every claim it makes must be independently verifiable:
   // the digest self-check, the role record artifact linkage, the role record
   // model-use linkage, and the real-provider requirement.
+  const manifestByRun = new Map<string, CaptureManifest>();
+  const manifestRunRefs = new Map<string, string>();
   const modelUseAgentIds = new Map<string, Set<string>>();
+  const modelUseByAgent = new Map<string, Array<{ incidentId: string; runId: string | undefined; toolCallIds: Set<string> }>>();
   for (const incident of incidents) {
     const agentIds = new Set<string>();
     for (const event of incident.events) {
       if (event.type === "model_use") {
         agentIds.add(event.agent_id);
+        const entry = { incidentId: incident.incidentId, runId: event.run_id, toolCallIds: new Set<string>() };
+        for (const call of event.tool_calls) {
+          entry.toolCallIds.add(call.tool_call_id);
+        }
+        const perAgent = modelUseByAgent.get(event.agent_id) ?? [];
+        perAgent.push(entry);
+        modelUseByAgent.set(event.agent_id, perAgent);
       }
     }
     modelUseAgentIds.set(incident.incidentId, agentIds);
@@ -582,6 +602,10 @@ export function verifySavedBundle(
     }
     // SAFETY: validate() parsed this payload against capture-manifest@1.0 above.
     const manifest = artifact.payload as unknown as CaptureManifest;
+    manifestByRun.set(
+      incidentRunKey(artifact.incident_id, artifact.run_id),
+      manifest,
+    );
     if (artifact.incident_id !== manifest.incident_id ||
         (artifact.run_id ?? undefined) !== manifest.run_id) {
       errors.push(
@@ -679,6 +703,115 @@ export function verifySavedBundle(
           ),
         );
       }
+      if (record.run_artifact_ref !== undefined) {
+        const runLinked = artifacts.get(record.run_artifact_ref);
+        if (runLinked === undefined) {
+          errors.push(
+            integrityError(
+              "MISSING_ARTIFACT",
+              `capture manifest role ${record.role} references an absent agent-run artifact`,
+              contentHashValue,
+              { role: record.role, run_artifact_ref: record.run_artifact_ref },
+            ),
+          );
+        } else {
+          const runPayload = runLinked.payload as unknown as AgentRunArtifactWire;
+          if (runLinked.artifact_schema_id !== "agent-run-artifact") {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact schema is not agent-run-artifact`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  run_artifact_ref: record.run_artifact_ref,
+                  actual_schema: runLinked.artifact_schema_id,
+                },
+              ),
+            );
+          }
+          if (
+            runLinked.incident_id !== manifest.incident_id ||
+            (runLinked.run_id ?? undefined) !== manifest.run_id
+          ) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact Incident or Run does not match the manifest`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  run_artifact_ref: record.run_artifact_ref,
+                  artifact_incident_id: runLinked.incident_id,
+                  artifact_run_id: runLinked.run_id ?? null,
+                },
+              ),
+            );
+          }
+          if (runPayload.phase !== record.role) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact phase does not match the role`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  expected_phase: record.role,
+                  actual_phase: runPayload.phase,
+                },
+              ),
+            );
+          }
+          if (runPayload.agent_id !== record.agent_id) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact agent does not match the record`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  expected_agent: record.agent_id,
+                  actual_agent: runPayload.agent_id,
+                },
+              ),
+            );
+          }
+          if (runPayload.status !== record.status) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact status does not match the record`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  record_status: record.status,
+                  artifact_status: runPayload.status,
+                },
+              ),
+            );
+          }
+          if (
+            record.artifact_ref !== undefined &&
+            runPayload.calls.some((call) => call.submission_ref !== null && call.submission_ref !== record.artifact_ref)
+          ) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} run artifact submission does not match the record artifact`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  artifact_ref: record.artifact_ref,
+                },
+              ),
+            );
+          }
+          manifestRunRefs.set(
+            scopedReferenceKey(manifest.incident_id, manifest.run_id, record.run_artifact_ref),
+            record.role,
+          );
+        }
+      }
       const recordedAgentIds = modelUseAgentIds.get(manifest.incident_id);
       for (const agentId of record.model_use_agent_ids) {
         if (recordedAgentIds === undefined || !recordedAgentIds.has(agentId)) {
@@ -691,6 +824,320 @@ export function verifySavedBundle(
             ),
           );
         }
+      }
+    }
+  }
+
+  // Agent Run Artifacts persist one role session honestly: stable call
+  // identity and order, settled statuses, the sealed terminal result, tool
+  // activity linked to journal model-use records, and run-level metrics that
+  // aggregate the calls without becoming an alternate source of lifecycle
+  // truth. Every failed or aborted attempt is sealed and verified the same
+  // way; a bundle that carries a capture manifest must bind every run
+  // artifact to its role record and provider class.
+  for (const [contentHashValue, artifact] of artifacts) {
+    if (artifact.artifact_schema_id !== "agent-run-artifact") {
+      continue;
+    }
+    // SAFETY: validate() parsed this payload against agent-run-artifact@1.0 above.
+    const run = artifact.payload as unknown as AgentRunArtifactWire;
+    const calls = run.calls;
+    if (calls.some((call, index) => call.order !== index)) {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "agent run artifact call order is not contiguous from zero",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    const callIds = calls.map((call) => call.call_id);
+    if (new Set(callIds).size !== callIds.length) {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "agent run artifact call identities are not unique",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    for (const call of calls) {
+      if (call.status === "pending" || call.status === "running") {
+        errors.push(
+          integrityError(
+            "MALFORMED_CONTRACT",
+            `agent run artifact call ${call.call_id} is not settled`,
+            contentHashValue,
+            { run_artifact_id: run.run_artifact_id, call_id: call.call_id, status: call.status },
+          ),
+        );
+      }
+    }
+    const finalCall = calls[calls.length - 1];
+    if (finalCall !== undefined && run.status !== finalCall.status) {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "agent run artifact status does not match its final call",
+          contentHashValue,
+          {
+            run_artifact_id: run.run_artifact_id,
+            artifact_status: run.status,
+            call_status: finalCall.status,
+          },
+        ),
+      );
+    }
+    const submissions = calls.filter((call) => call.submission_ref !== null);
+    if (run.status === "succeeded") {
+      if (submissions.length !== 1 || submissions[0]?.status !== "succeeded") {
+        errors.push(
+          integrityError(
+            "MALFORMED_CONTRACT",
+            "a succeeded agent run artifact needs exactly one succeeded call with a submission",
+            contentHashValue,
+            { run_artifact_id: run.run_artifact_id, status: run.status },
+          ),
+        );
+      }
+    } else if (submissions.length > 0) {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "a failed or aborted agent run artifact cannot carry a submission",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id, status: run.status },
+        ),
+      );
+    }
+    const expectedTerminalSchema = TERMINAL_SCHEMA_BY_ROLE[run.phase as AgentRoleName];
+    for (const call of submissions) {
+      const submissionRef = call.submission_ref;
+      if (submissionRef === null) {
+        continue;
+      }
+      const linked = artifacts.get(submissionRef);
+      if (linked === undefined) {
+        errors.push(
+          integrityError(
+            "MISSING_ARTIFACT",
+            `agent run artifact call ${call.call_id} references an absent terminal artifact`,
+            contentHashValue,
+            { run_artifact_id: run.run_artifact_id, submission_ref: submissionRef },
+          ),
+        );
+        continue;
+      }
+      if (
+        linked.incident_id !== artifact.incident_id ||
+        (linked.run_id ?? undefined) !== artifact.run_id
+      ) {
+        errors.push(
+          integrityError(
+            "MALFORMED_CONTRACT",
+            "agent run artifact submission Incident or Run does not match its envelope",
+            contentHashValue,
+            {
+              run_artifact_id: run.run_artifact_id,
+              submission_incident_id: linked.incident_id,
+              submission_run_id: linked.run_id ?? null,
+            },
+          ),
+        );
+      }
+      if (linked.artifact_schema_id !== expectedTerminalSchema) {
+        errors.push(
+          integrityError(
+            "MALFORMED_CONTRACT",
+            "agent run artifact submission schema does not match the role phase",
+            contentHashValue,
+            {
+              run_artifact_id: run.run_artifact_id,
+              phase: run.phase,
+              expected_schema: expectedTerminalSchema ?? null,
+              actual_schema: linked.artifact_schema_id,
+            },
+          ),
+        );
+      }
+      if (
+        !journalSealedKeys.has(
+          scopedReferenceKey(artifact.incident_id, artifact.run_id, submissionRef),
+        )
+      ) {
+        errors.push(
+          integrityError(
+            "MISSING_ARTIFACT",
+            "agent run artifact submission was not sealed in the same Incident Run",
+            contentHashValue,
+            { run_artifact_id: run.run_artifact_id, submission_ref: submissionRef },
+          ),
+        );
+      }
+    }
+    // A session that never reached the provider (a resolution or setup
+    // failure before the first turn) has no model_use records to link;
+    // only sessions that actually inferred must be traceable to the journal.
+    const hasInference = calls.some(
+      (call) => call.turns > 0 || call.tool_activity.length > 0,
+    );
+    const agentUses = hasInference
+      ? modelUseByAgent
+          .get(run.agent_id)
+          ?.filter(
+            (use) =>
+              use.incidentId === artifact.incident_id &&
+              (use.runId ?? undefined) === artifact.run_id,
+          ) ?? []
+      : [];
+    if (agentUses.length === 0 && hasInference) {
+      errors.push(
+        integrityError(
+          "MISSING_ARTIFACT",
+          `agent run artifact agent ${run.agent_id} has no model_use journal record in its Incident Run`,
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id, agent_id: run.agent_id },
+        ),
+      );
+    }
+    const toolCallIds = new Set<string>();
+    for (const use of agentUses) {
+      for (const id of use.toolCallIds) {
+        toolCallIds.add(id);
+      }
+    }
+    for (const call of calls) {
+      for (const activity of call.tool_activity) {
+        if (agentUses.length > 0 && !toolCallIds.has(activity.tool_call_id)) {
+          errors.push(
+            integrityError(
+              "MISSING_ARTIFACT",
+              `agent run artifact tool call ${activity.tool_call_id} has no model_use journal record`,
+              contentHashValue,
+              {
+                run_artifact_id: run.run_artifact_id,
+                call_id: call.call_id,
+                tool_call_id: activity.tool_call_id,
+              },
+            ),
+          );
+        }
+      }
+    }
+    const sumOf = (pick: (call: AgentRunArtifactWire["calls"][number]) => number): number =>
+      calls.reduce((total, call) => total + pick(call), 0);
+    if (
+      run.metrics.duration_ms !==
+      sumOf((call) => Date.parse(call.completed_at) - Date.parse(call.started_at))
+    ) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact duration_ms does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (run.metrics.prompt_tokens !== sumOf((call) => call.token_use.prompt_tokens)) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact prompt_tokens does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (run.metrics.completion_tokens !== sumOf((call) => call.token_use.completion_tokens)) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact completion_tokens does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (run.metrics.total_tokens !== sumOf((call) => call.token_use.total_tokens)) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact total_tokens does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (run.metrics.tool_call_count !== sumOf((call) => call.tool_activity.length)) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact tool_call_count does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (
+      run.metrics.retry_delay_ms !==
+      sumOf((call) => call.retry_delay_ms ?? 0)
+    ) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact retry_delay_ms does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    if (
+      run.metrics.rate_limit_delay_ms !==
+      sumOf((call) => call.rate_limit_delay_ms ?? 0)
+    ) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "agent run artifact rate_limit_delay_ms does not match its calls",
+          contentHashValue,
+          { run_artifact_id: run.run_artifact_id },
+        ),
+      );
+    }
+    const manifest = manifestByRun.get(
+      incidentRunKey(artifact.incident_id, artifact.run_id),
+    );
+    if (manifest !== undefined) {
+      if (run.provider_class !== manifest.provider_class) {
+        errors.push(
+          integrityError(
+            "MALFORMED_CONTRACT",
+            "agent run artifact provider_class does not match the capture manifest",
+            contentHashValue,
+            {
+              run_artifact_id: run.run_artifact_id,
+              artifact_provider_class: run.provider_class,
+              manifest_provider_class: manifest.provider_class,
+            },
+          ),
+        );
+      }
+      if (
+        !manifestRunRefs.has(
+          scopedReferenceKey(artifact.incident_id, artifact.run_id, contentHashValue),
+        )
+      ) {
+        errors.push(
+          integrityError(
+            "MISSING_ARTIFACT",
+            "agent run artifact is not referenced by any capture manifest role record",
+            contentHashValue,
+            { run_artifact_id: run.run_artifact_id },
+          ),
+        );
       }
     }
   }

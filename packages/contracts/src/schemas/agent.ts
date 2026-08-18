@@ -189,6 +189,8 @@ const ROLE_RECORD = {
     status: { enum: ["succeeded", "failed", "aborted"] },
     submission_id: NON_EMPTY_STRING,
     artifact_ref: HASH_STRING,
+    /** The sealed agent-run-artifact for this session, when recorded. */
+    run_artifact_ref: HASH_STRING,
     model_use_agent_ids: {
       type: "array",
       items: NON_EMPTY_STRING,

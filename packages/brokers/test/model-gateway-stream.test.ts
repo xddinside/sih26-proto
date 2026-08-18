@@ -104,7 +104,7 @@ describe("Model Gateway streaming transport", () => {
     expect(use?.tool_calls).toEqual([])
   })
 
-  test("tool-call turns record the call ids and names", async () => {
+  test("tool-call turns record the journal-valid call ids and tool names", async () => {
     const cp = new FakeControlPlaneClient()
     cp.leases.add("lease-1")
     const gateway = new ModelGateway(
@@ -122,7 +122,7 @@ describe("Model Gateway streaming transport", () => {
 
     expect(result).toHaveProperty("stopReason", "toolUse")
     const use = cp.modelUses[0]?.use
-    expect(use?.tool_calls).toEqual([{ id: "call-1", name: "read_broker_query" }])
+    expect(use?.tool_calls).toEqual([{ tool: "read_broker_query", tool_call_id: "call-1" }])
   })
 
   test("a provider setup failure re-throws a sanitized error", async () => {

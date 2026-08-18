@@ -26,6 +26,7 @@ import {
   SYNTHESIZER_SYSTEM_PROMPT,
 } from "../prompts.js"
 import { PiRoleSession } from "../role/role-session.js"
+import type { RoleSessionPhase } from "../role/role-session.js"
 import type { RoleLimits } from "../role/limits.js"
 import { createReadTool } from "../role/broker-tools.js"
 import { createTerminalTool } from "../role/terminal-tools.js"
@@ -75,6 +76,8 @@ export interface FusionRoleSessionRecord {
   agentId: string
   status: "succeeded" | "failed" | "aborted"
   submissionId?: string
+  /** The sealed agent-run-artifact hash for this session. */
+  runArtifactRef?: string
   modelUseAgentIds: string[]
   turns: number
   toolCalls: number
@@ -425,6 +428,7 @@ async function runRoleSession(options: {
     agentId: options.agentId,
     parentAgentId: options.options.parentAgentId,
     agentRole: options.roleLabel,
+    phase: options.roleLabel as RoleSessionPhase,
     systemPrompt: options.systemPrompt,
     model: options.options.model,
     reasoning: options.options.reasoning,
@@ -445,6 +449,12 @@ async function runRoleSession(options: {
   const result = await session.run(options.promptText)
   const status = result.status
   const payload = status === "succeeded" ? capturedPayload : null
+  const sealedRun = await options.options.seal.seal({
+    schemaId: "agent-run-artifact",
+    schemaVersion: "1.0",
+    payload: result.artifact,
+    producer: { skill: `sih-fusion-${options.roleLabel}`, skill_version: "1.0" },
+  })
   options.call.status = status
   options.call.durationMs = Date.now() - started
   options.call.turns = result.turns
@@ -463,6 +473,7 @@ async function runRoleSession(options: {
     toolCalls: result.toolCalls,
     durationMs: Date.now() - started,
     modelUseAgentIds: [options.agentId],
+    runArtifactRef: sealedRun.content_hash,
   }
   if (submissionId !== undefined) {
     record.submissionId = submissionId

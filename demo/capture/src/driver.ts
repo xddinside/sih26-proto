@@ -469,6 +469,8 @@ export interface CaptureReport {
   agents: "fixture" | "real"
   /** The capture manifest sealed before the run closed. */
   manifestSealed: boolean
+  /** How many agent-run-artifacts the run sealed. */
+  agentRunArtifacts: number
 }
 
 const REVIEW_SKILL_BY_ROLE: Record<string, string> = {
@@ -955,6 +957,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
             "fusion-judge-output": "1.0",
             "fusion-synthesizer-output": "1.0",
             "fusion-run-artifact": "1.0",
+            "agent-run-artifact": "1.0",
           },
           scenario: `payment charge failure (${facts.seed})`,
           mode: options.mode ?? "full-capture",
@@ -1550,6 +1553,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         stageRecords: cp.journal.state(incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
         agents: kit === null ? "fixture" : "real",
         manifestSealed: kit !== null,
+        agentRunArtifacts: cp.sealedArtifacts(incidentId).filter(
+          (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
+        ).length,
       }
       await runtime.store.close()
       return report
@@ -2110,6 +2116,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       stageRecords: finalState?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
       agents: kit === null ? "fixture" : "real",
       manifestSealed: kit !== null,
+      agentRunArtifacts: cp.sealedArtifacts(incidentId).filter(
+        (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
+      ).length,
     }
     await runtime.store.close()
     return report
