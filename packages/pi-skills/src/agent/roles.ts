@@ -77,8 +77,14 @@ export interface AgentRoleResult<T> {
 
 const ROLE_TOOL = "role_session_tool"
 
-function authorityTools(tools: readonly string[]): string[] {
-  const out = [...tools]
+/** The authority set for a role session: the terminal tool that ends the
+ * role plus the role's declared tools. Every registered tool must be inside
+ * the effective set or the Pi loop never exposes it. */
+function authorityTools(
+  terminalName: string,
+  tools: readonly string[],
+): string[] {
+  const out = [terminalName, ...tools]
   if (out.includes(ROLE_TOOL)) {
     return out
   }
@@ -137,7 +143,7 @@ async function runRoleSession<T>(
   if (options.kit.worktree !== undefined) {
     registeredTools.push(...createWorktreeTools(options.kit.worktree))
   }
-  const toolNames = authorityTools(options.tools ?? [])
+  const toolNames = authorityTools(options.terminalName, options.tools ?? [])
   registeredTools.push(terminal.tool)
   const session = new PiRoleSession({
     agentId: options.agentId,

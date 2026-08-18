@@ -98,8 +98,14 @@ export interface RealFusionRoundResult {
 
 const READ_TOOL = "read_broker_query"
 
-function authorityTools(tools: readonly string[]): string[] {
-  return [READ_TOOL, ...tools]
+/** The authority set for a role session: the terminal tool that ends the
+ * role, the broker read tool, and any other declared tools. Every registered
+ * tool must be inside the effective set or the Pi loop never exposes it. */
+function authorityTools(
+  terminalName: string,
+  tools: readonly string[],
+): string[] {
+  return [terminalName, READ_TOOL, ...tools]
 }
 
 /**
@@ -139,7 +145,11 @@ export async function runRealFusionRound(
   const calls: FusionRunArtifact["calls"] = []
   const sessions: FusionRoleSessionRecord[] = []
 
-  const participantRuns = await Promise.all(
+  // Participants run concurrently. Results are collected per index and then
+  // recorded in configured perspective order below, never in completion
+  // order, so persisted and displayed participant order always follows the
+  // configured perspectives.
+  const participantResults = await Promise.all(
     options.participantIds.map(async (participantId, index) => {
       const perspective = options.participantPerspectives[index] ?? ""
       const agentId = `${participantId}-${options.round}`
@@ -151,6 +161,7 @@ export async function runRealFusionRound(
         systemPrompt: [
           PARTICIPANT_SYSTEM_PROMPT,
           `Your assigned investigation perspective: ${perspective}`,
+          "Treat it as a starting lens, not a constraint: you may reject it or propose any Hypothesis the evidence supports.",
         ].join("\n"),
         promptText: participantPrompt,
         terminalName: "submit_hypotheses",
@@ -159,37 +170,46 @@ export async function runRealFusionRound(
         call,
         readBroker: options.readBroker,
       })
-      sessions.push(captured.session)
-      calls.push(call)
+      let run: ParticipantRun
       if (captured.payload !== null && captured.status === "succeeded") {
-        return {
+        run = {
           participantId,
           model: modelLabel(options),
           wellFormed: true,
           output: captured.payload as FusionParticipantOutput,
         } satisfies ParticipantRun
+      } else {
+        run = {
+          participantId,
+          model: modelLabel(options),
+          wellFormed: false,
+          failure: {
+            message: captured.session.status === "succeeded"
+              ? "participant output failed the Fusion Participant Output v1 schema check"
+              : (captured.session.status === "aborted"
+                  ? "participant session aborted"
+                  : "participant session failed"),
+            attempts: 1,
+          },
+        } satisfies ParticipantRun
       }
-      return {
-        participantId,
-        model: modelLabel(options),
-        wellFormed: false,
-        failure: {
-          message: captured.session.status === "succeeded"
-            ? "participant output failed the Fusion Participant Output v1 schema check"
-            : (captured.session.status === "aborted"
-                ? "participant session aborted"
-                : "participant session failed"),
-          attempts: 1,
-        },
-      } satisfies ParticipantRun
+      return { call, session: captured.session, run }
     }),
   )
+  const participantRuns = participantResults.map((result) => result.run)
+  for (const result of participantResults) {
+    sessions.push(result.session)
+    calls.push(result.call)
+  }
   artifact.calls = [...calls]
 
   const roundValid = participantRuns.filter((run) => run.wellFormed).length >= 2
   if (!roundValid) {
-    artifact.status = "invalid"
-    artifact.statusReason = `${participantRuns.filter((run) => run.wellFormed).length} well-formed participant outputs; a round needs at least two`
+    const aborted = options.signal?.aborted === true
+    artifact.status = aborted ? "aborted" : "invalid"
+    artifact.statusReason = aborted
+      ? "Fusion round aborted before the Judge; no terminal results"
+      : `${participantRuns.filter((run) => run.wellFormed).length} well-formed participant outputs; a round needs at least two`
     artifact.metrics = metricsOf(sessions, startedAt)
     artifact.sealedAt = new Date().toISOString()
     return {
@@ -243,8 +263,11 @@ export async function runRealFusionRound(
       },
       malformedReruns: 0,
     }
-    artifact.status = "invalid"
-    artifact.statusReason = "Judge output malformed; the round is invalid"
+    artifact.status = options.signal?.aborted === true ? "aborted" : "invalid"
+    artifact.statusReason =
+      options.signal?.aborted === true
+        ? "Fusion round aborted during the Judge"
+        : "Judge output malformed; the round is invalid"
     artifact.metrics = metricsOf(sessions, startedAt)
     artifact.sealedAt = new Date().toISOString()
     return {
@@ -309,8 +332,12 @@ export async function runRealFusionRound(
       malformedReruns: 0,
       exhausted: false,
     }
-    artifact.status = "failed"
-    artifact.statusReason = "Synthesizer output malformed; the round ends needs-human"
+    artifact.status =
+      options.signal?.aborted === true ? "aborted" : "failed"
+    artifact.statusReason =
+      options.signal?.aborted === true
+        ? "Fusion round aborted during the Synthesizer"
+        : "Synthesizer output malformed; the round ends needs-human"
     artifact.metrics = metricsOf(sessions, startedAt)
     artifact.sealedAt = new Date().toISOString()
     return {
@@ -423,7 +450,10 @@ async function runRoleSession(options: {
     )
   }
   tools.push(terminal.tool)
-  const toolNames = authorityTools(options.options.tools ?? [])
+  const toolNames = authorityTools(
+    options.terminalName,
+    options.options.tools ?? [],
+  )
   const session = new PiRoleSession({
     agentId: options.agentId,
     parentAgentId: options.options.parentAgentId,
@@ -459,6 +489,7 @@ async function runRoleSession(options: {
   options.call.durationMs = Date.now() - started
   options.call.turns = result.turns
   options.call.toolCalls = result.toolCalls
+  options.call.systemPrompt = options.systemPrompt
   if (payload !== null) {
     options.call.output = JSON.stringify(payload)
   }

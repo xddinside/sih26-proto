@@ -24,6 +24,7 @@ import type { HashString } from "@sih/contracts/hashes"
 import type {
   EvidenceItem,
   Hypothesis,
+  IncidentBrief,
   ReviewReport,
   TestReport,
 } from "@sih/contracts/types"
@@ -36,6 +37,7 @@ import type { FusionRoundResult } from "../fusion/fusion-runtime.js"
 import type { RealFusionRoundOptions } from "../fusion/fusion-real.js"
 import { buildLaterContext } from "../fusion/traces.js"
 import type { FusionRunArtifact } from "../fusion/traces.js"
+import { buildDeterministicBrief } from "../prompts.js"
 import {
   computeCandidateHash,
   validateImplementerDiff,
@@ -212,9 +214,7 @@ export interface ControlPlaneProposals {
   resolveApplicability: (
     input: ApplicabilityInput
   ) => Promise<ApplicabilityResult>
-  requestVerificationVerdict: (
-    input: VerificationInput
-  ) => Promise<{
+  requestVerificationVerdict: (input: VerificationInput) => Promise<{
     verdict: string
     reason: string
     artifact_ref: {
@@ -555,6 +555,12 @@ export class PiOrchestratorExtension {
   async driveDiagnose(options: {
     task: string
     brief?: string
+    /**
+     * The sealed Incident Brief payload. When `brief` is absent, the Shared
+     * Starting Context brief is assembled deterministically from it — never
+     * from a model-generated conversation brief.
+     */
+    incidentBrief?: IncidentBrief
     roundCap: number | null
     demoProfile: boolean
     fusionConfig: {
@@ -603,6 +609,13 @@ export class PiOrchestratorExtension {
       "docs_proxy",
       "evidence_note",
     ])
+    // The Shared Starting Context brief is deterministic: either the caller
+    // supplied one, or it is assembled from the sealed Incident Brief facts.
+    const brief =
+      options.brief ??
+      (options.incidentBrief === undefined
+        ? undefined
+        : buildDeterministicBrief(options.incidentBrief, []))
     let round = 0
     let revisionId = this.options.evidence.revisionId
     let items = this.options.evidence.items
@@ -621,7 +634,7 @@ export class PiOrchestratorExtension {
               round,
               revisionId,
               task: options.task,
-              brief: options.brief,
+              brief,
               config: options.fusionConfig,
               skillsRoot: runtime.skillsRoot,
               scratchRoot: this.scratchRoot(),
@@ -636,7 +649,7 @@ export class PiOrchestratorExtension {
               round,
               revisionId,
               task: options.task,
-              brief: options.brief,
+              brief,
               participantIds: options.fusionConfig.participantIds,
               judgeId: options.fusionConfig.judgeId,
               synthesizerId: options.fusionConfig.synthesizerId,

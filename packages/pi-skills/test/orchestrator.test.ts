@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { FakeControlPlaneClient, ModelGateway } from "@sih/brokers"
 import type { ModelProvider } from "@sih/brokers"
 import { contentHash } from "@sih/contracts/hashes"
+import type { IncidentBrief } from "@sih/contracts/types"
 
 import {
   PiOrchestratorExtension,
@@ -379,6 +380,122 @@ describe("driveDiagnose", () => {
         remediationDisposition: "allowed",
       })
     ).rejects.toThrow("evidence gathering drives the next round")
+  })
+
+  test("a gate-rejected round is rerun through the Orchestrator; the report is sealed only for the accepted round", async () => {
+    let gateCalls = 0
+    const proposals = fakeProposals({
+      gateVerdict: () => {
+        gateCalls += 1
+        return gateCalls === 1 ? "reject" : "pass"
+      },
+    })
+    const { gateway } = makeStubGateway({
+      "stub-participant-1": JSON.stringify(
+        makeParticipantOutput({
+          participantId: "p-1",
+          revisionId: REVISION_ID,
+          hypothesis,
+        })
+      ),
+      "stub-participant-2": JSON.stringify(
+        makeParticipantOutput({
+          participantId: "p-2",
+          revisionId: REVISION_ID,
+          hypothesis,
+        })
+      ),
+      "stub-judge": JSON.stringify(
+        makeJudgeOutput({ judgeId: "j-1", revisionId: REVISION_ID })
+      ),
+      "stub-synthesizer": JSON.stringify(
+        makeSynthesizerOutput({
+          synthesizerId: "s-1",
+          revisionId: REVISION_ID,
+          hypothesis,
+        })
+      ),
+    })
+    const orchestrator = await buildOrchestrator(gateway, proposals)
+    const outcome = await orchestrator.driveDiagnose({
+      task: "Diagnose the payment charge failure.",
+      roundCap: 2,
+      demoProfile: true,
+      fusionConfig: fusionConfig(),
+      remediationDisposition: "allowed",
+    })
+    expect(outcome.ok).toBe(true)
+    expect(gateCalls).toBe(2)
+    expect(orchestrator.fusionRounds).toHaveLength(2)
+    expect(orchestrator.fusionRounds.every((round) => round.valid)).toBe(true)
+    // The Diagnosis Report is sealed exactly once, carrying both rounds.
+    const reports = proposals.sealed.filter(
+      (entry) =>
+        (entry as { schema_version: string; fusion_meta?: unknown })
+          .schema_version === "1.0" &&
+        (entry as { fusion_meta?: unknown }).fusion_meta !== undefined
+    )
+    expect(reports).toHaveLength(1)
+    const report = reports[0] as {
+      fusion_meta: {
+        rounds: { round: number; valid: boolean; participant_ids: string[] }[]
+      }
+    }
+    expect(report.fusion_meta.rounds).toEqual([
+      { round: 1, valid: true, participant_ids: ["p-1", "p-2"] },
+      { round: 2, valid: true, participant_ids: ["p-1", "p-2"] },
+    ])
+  })
+
+  test("driveDiagnose assembles the Shared Starting Context deterministically from the Incident Brief", async () => {
+    const proposals = fakeProposals({ gateVerdict: () => "pass" })
+    const cp = new FakeControlPlaneClient()
+    cp.leases.add("lease-test-1")
+    const gateway = new ModelGateway(cp, phasedProvider())
+    const orchestrator = await buildOrchestrator(gateway, proposals)
+    const incidentBrief: IncidentBrief = {
+      schema_version: "1.0",
+      incident_id: "inc-test",
+      run_id: "run-1",
+      attempt: 1,
+      severity: "critical",
+      scope: {
+        tenant_id: "demo",
+        deployment_environment_name: "demo",
+        service_name: "payment",
+      },
+      symptom: "every valid charge fails in the payment service",
+      initial_evidence_item_ids: [fixtureHash("item-1")],
+      service_topology: "checkout -> payment (gRPC)",
+      known_limits: "reduced Compose profile",
+      policy_version: "policy-1",
+      sealed_at: new Date().toISOString(),
+    }
+    await orchestrator.driveDiagnose({
+      task: "Diagnose the payment charge failure.",
+      incidentBrief,
+      roundCap: 2,
+      demoProfile: true,
+      fusionConfig: fusionConfig(),
+      remediationDisposition: "allowed",
+    })
+    const brief = orchestrator.fusionRounds[0]?.artifact.brief
+    expect(brief).toContain(
+      "Symptom: every valid charge fails in the payment service"
+    )
+    expect(brief).toContain("Severity: critical")
+    expect(brief).toContain(
+      "Scope: tenant demo, environment demo, service payment"
+    )
+    expect(brief).toContain("Policy version in force: policy-1")
+    expect(brief).toContain("Known limits: reduced Compose profile")
+    expect(brief).toContain("Service topology: checkout -> payment (gRPC)")
+    // No model-generated conversation brief is created.
+    expect(brief).not.toContain("conversation")
+    // The pinned Evidence Set revision id is part of the shared context.
+    expect(
+      orchestrator.fusionRounds[0]?.artifact.calls[0]?.inputPrompt
+    ).toContain(REVISION_ID)
   })
 
   test("the fusion-round cap stops the loop", async () => {

@@ -23,7 +23,12 @@ import { ModelGateway, ReadBroker, piAiStreamingProvider, stubProvider } from "@
 import type { ControlPlaneClient, LeaseRef, ModelProvider } from "@sih/brokers"
 import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import { deliveryKey, incidentKey, evidenceItemId } from "@sih/contracts/hashes"
-import type { BrokerReceipt, EvidenceItem, JournalEvent } from "@sih/contracts/types"
+import type {
+  BrokerReceipt,
+  EvidenceItem,
+  IncidentBrief,
+  JournalEvent,
+} from "@sih/contracts/types"
 import type { HashString } from "@sih/contracts/hashes"
 
 import { bootstrap } from "@sih/control-plane/src/bootstrap.js"
@@ -976,12 +981,36 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       skills,
       "detect",
     )
-    const detect = await detectOrchestrator.driveDetect({
+    // The Detect facts are the deterministic source for the Incident Brief,
+    // the Diagnose Shared Starting Context, and the exact diagnosis task.
+    const incidentFacts = {
       symptom: "every valid charge fails in the payment service",
-      severity: "critical",
-      scope: { tenant_id: TENANT_ID, deployment_environment_name: ENVIRONMENT, service_name: SERVICE_NAME },
+      severity: "critical" as const,
+      scope: {
+        tenant_id: TENANT_ID,
+        deployment_environment_name: ENVIRONMENT,
+        service_name: SERVICE_NAME,
+      },
       serviceTopology: "checkout -> payment (gRPC)",
-      knownLimits: "reduced Compose profile; the charge driver stands in for storefront traffic",
+      knownLimits:
+        "reduced Compose profile; the charge driver stands in for storefront traffic",
+    }
+    const incidentBrief: IncidentBrief = {
+      schema_version: "1.0",
+      incident_id: incidentId,
+      run_id: runId,
+      attempt: 1,
+      severity: incidentFacts.severity,
+      scope: incidentFacts.scope,
+      symptom: incidentFacts.symptom,
+      initial_evidence_item_ids: [ids.metricId],
+      service_topology: incidentFacts.serviceTopology,
+      known_limits: incidentFacts.knownLimits,
+      policy_version: policyVersion,
+      sealed_at: new Date().toISOString(),
+    }
+    const detect = await detectOrchestrator.driveDetect({
+      ...incidentFacts,
       policyVersion,
       verificationQueries: [
         { backend: "prometheus", connection_id: "astronomy-shop-local", query: "payment error ratio", resource_type: "metric" },
@@ -1023,7 +1052,8 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     })
 
     const diagnose = await diagnoseOrchestrator.driveDiagnose({
-      task: "Diagnose the payment charge failure from the Evidence Set revision R_1.",
+      task: `Diagnose the ${incidentFacts.symptom} from the pinned Evidence Set revision ${revisionId}.`,
+      incidentBrief,
       roundCap: 3,
       demoProfile: true,
       fusionConfig: {

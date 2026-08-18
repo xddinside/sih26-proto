@@ -70,6 +70,7 @@ export function buildDeterministicBrief(
     "## Binding incident facts (sealed Incident Brief v1)",
     `- Symptom: ${incidentBrief.symptom}`,
     `- Severity: ${incidentBrief.severity}`,
+    `- Scope: tenant ${incidentBrief.scope.tenant_id}, environment ${incidentBrief.scope.deployment_environment_name}, service ${incidentBrief.scope.service_name}`,
     `- Policy version in force: ${incidentBrief.policy_version}`,
     incidentBrief.known_limits === undefined
       ? ""
