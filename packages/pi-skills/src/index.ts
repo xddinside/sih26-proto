@@ -97,11 +97,15 @@ export {
   artifactDigest,
   buildLaterContext,
   assertExcludedFromContext,
+  fusionRunArtifactWire,
 } from "./fusion/traces.js"
 export type {
   FusionRunArtifact,
   FusionPipelineCall,
   FusionCallKind,
+  FusionPerspective,
+  FusionRunMetrics,
+  FusionRunArtifactWire,
 } from "./fusion/traces.js"
 
 export {
@@ -202,3 +206,33 @@ export type {
 } from "./orchestrator/orchestrator.js"
 export { HttpControlPlaneProposals } from "./orchestrator/http-proposals.js"
 export type { HttpProposalsOptions } from "./orchestrator/http-proposals.js"
+
+export { runRealFusionRound } from "./fusion/fusion-real.js"
+export type {
+  RealFusionRoundOptions,
+  RealFusionRoundResult,
+  FusionRoleSessionRecord,
+  FusionSealSurface,
+} from "./fusion/fusion-real.js"
+
+export {
+  runPlannerRole,
+  runImplementerRole,
+  runReviewRole,
+  runTestRole,
+  runOrchestratorRole,
+  createWorktreeHost,
+  createWorktreeTools,
+  buildUnifiedDiff,
+} from "./agent/roles.js"
+export type {
+  AgentSessionKit,
+  AgentSessionRecord,
+  AgentRoleResult,
+  WorktreeHost,
+  PlannerRoleOptions,
+  ImplementerRoleOptions,
+  ReviewRoleOptions,
+  TestRoleOptions,
+  OrchestratorRoleOptions,
+} from "./agent/roles.js"

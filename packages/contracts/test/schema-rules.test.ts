@@ -101,4 +101,176 @@ describe("fixed schema rules", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  test("Fusion Run Artifact is registered and excludes itself from context", () => {
+    const base = {
+      schema_version: "1.0",
+      round: 1,
+      revision_id: `sha256:${"a".repeat(64)}`,
+      task: "Diagnose the payment charge failure",
+      calls: [
+        {
+          kind: "participant",
+          role: "fusion-participant",
+          model: "stub-participant-1",
+          status: "succeeded",
+          system_prompt: "You are a participant.",
+          input_prompt: "Analyze from your perspective.",
+          output: "participant hypotheses",
+          attempts: 1,
+          retry_delays_ms: [0],
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          started_at: "2026-08-16T00:00:00Z",
+          duration_ms: 100,
+          turns: 1,
+          tool_calls: 0,
+        },
+        {
+          kind: "judge",
+          role: "fusion-judge",
+          model: "stub-judge",
+          status: "succeeded",
+          system_prompt: "You are the Judge.",
+          input_prompt: "Assess the hypotheses.",
+          output: null,
+          attempts: 1,
+          retry_delays_ms: [0],
+          prompt_tokens: 8,
+          completion_tokens: 4,
+          started_at: "2026-08-16T00:00:01Z",
+          duration_ms: 90,
+          turns: 1,
+          tool_calls: 0,
+        },
+      ],
+      status: "succeeded",
+      exclude_from_context: true,
+      sealed_at: "2026-08-16T00:00:02Z",
+    };
+    const result = validate("fusion-run-artifact", "1.0", base);
+    expect(result.ok).toBe(true);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...base,
+        exclude_from_context: false,
+      }).ok,
+    ).toBe(false);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...base,
+        round: 0,
+      }).ok,
+    ).toBe(false);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...base,
+        revision_id: "not-a-hash",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...base,
+        metrics: {
+          participants: [
+            {
+              participant_id: "p-1",
+              status: "succeeded",
+              turns: 1,
+              tool_calls: 0,
+              duration_ms: 100,
+            },
+            {
+              participant_id: "p-2",
+              status: "succeeded",
+              turns: 1,
+              tool_calls: 0,
+              duration_ms: 110,
+            },
+          ],
+          judge: { status: "succeeded", turns: 1, tool_calls: 0, duration_ms: 90 },
+          synthesizer: { status: "succeeded", turns: 1, tool_calls: 0, duration_ms: 80 },
+          total_wall_clock_ms: 300,
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
+  test("Fusion Run Artifact rejects unknown calls, non-literal exclusion, and bad revisions", () => {
+    const payload = {
+      schema_version: "1.0",
+      round: 1,
+      revision_id: `sha256:${"a".repeat(64)}`,
+      task: "Diagnose the payment charge failure",
+      calls: [
+        {
+          kind: "brief",
+          role: "fusion-briefer",
+          model: "deepseek-v4-flash",
+          status: "succeeded",
+          system_prompt: "",
+          input_prompt: "Diagnose the incident.",
+          output: null,
+          attempts: 1,
+          retry_delays_ms: [],
+          prompt_tokens: 100,
+          completion_tokens: 40,
+          started_at: "2026-08-16T00:00:00Z",
+          duration_ms: 1200,
+        },
+      ],
+      status: "succeeded",
+      exclude_from_context: true,
+      sealed_at: "2026-08-16T00:00:00Z",
+    };
+    expect(validate("fusion-run-artifact", "1.0", payload).ok).toBe(true);
+    expect(
+      validate("fusion-run-artifact", "1.0", { ...payload, calls: [] }).ok,
+    ).toBe(true);
+    expect(
+      validate("fusion-run-artifact", "1.0", { ...payload, status: "invalid" }).ok,
+    ).toBe(true);
+    expect(
+      validate("fusion-run-artifact", "1.0", { ...payload, round: 0 }).ok,
+    ).toBe(false);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...payload,
+        revision_id: "not-a-hash",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validate("fusion-run-artifact", "1.0", {
+        ...payload,
+        calls: [{ ...payload.calls[0], kind: "observatory" }],
+      }).ok,
+    ).toBe(false);
+  });
+
+  test("Fusion Run Artifact accepts per-participant metrics and perspectives", () => {
+    const result = validate("fusion-run-artifact", "1.0", {
+      schema_version: "1.0",
+      round: 1,
+      revision_id: `sha256:${"a".repeat(64)}`,
+      task: "Diagnose the payment charge failure",
+      calls: [],
+      status: "succeeded",
+      exclude_from_context: true,
+      sealed_at: "2026-08-16T00:00:00Z",
+      perspectives: [
+        { participant_id: "p-1", perspective: "card-reader specialist", order: 1 },
+        { participant_id: "p-2", perspective: "merchant accountant", order: 2 },
+      ],
+      metrics: {
+        participants: [
+          { participant_id: "p-1", status: "succeeded", turns: 4, tool_calls: 2, duration_ms: 1200 },
+          { participant_id: "p-2", status: "succeeded", turns: 4, tool_calls: 2, duration_ms: 1100 },
+        ],
+        judge: { status: "succeeded", turns: 2, tool_calls: 0, duration_ms: 800 },
+        synthesizer: { status: "succeeded", turns: 2, tool_calls: 0, duration_ms: 900 },
+        total_wall_clock_ms: 3000,
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
 });

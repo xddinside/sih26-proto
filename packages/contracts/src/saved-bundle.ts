@@ -25,12 +25,14 @@ import { checkFreshness } from "./freshness.js";
 import { normalizeSavedPath, validatePaths } from "./paths.js";
 import { reduceJournalEvents, verifyJournalSequence } from "./journal.js";
 import { classifySchema } from "./schemas/registry.js";
+import { TERMINAL_SCHEMA_BY_ROLE } from "./schemas/agent.js";
 import type { ArtifactEnvelope } from "./schemas/artifact-envelope.js";
 import type { JournalEvent } from "./schemas/journal-event.js";
 import type { SavedBundleManifest } from "./schemas/saved-bundle-manifest.js";
 import type { EvidenceSet } from "./schemas/evidence.js";
 import type { EvidenceHashInput } from "./schemas/hash-inputs.js";
 import type { TestReport, VerificationReport } from "./schemas/reports.js";
+import type { CaptureManifest } from "./schemas/agent.js";
 
 /** An in-memory saved bundle: POSIX path to exact file bytes. */
 export interface SavedFiles {
@@ -559,8 +561,151 @@ export function verifySavedBundle(
     }
   }
 
+  // Capture manifests bind a run to its provider, model, skill and tool
+  // revisions, budgets, and every role session that ran. When a bundle
+  // carries one, every claim it makes must be independently verifiable:
+  // the digest self-check, the role record artifact linkage, the role record
+  // model-use linkage, and the real-provider requirement.
+  const modelUseAgentIds = new Map<string, Set<string>>();
+  for (const incident of incidents) {
+    const agentIds = new Set<string>();
+    for (const event of incident.events) {
+      if (event.type === "model_use") {
+        agentIds.add(event.agent_id);
+      }
+    }
+    modelUseAgentIds.set(incident.incidentId, agentIds);
+  }
+  for (const [contentHashValue, artifact] of artifacts) {
+    if (artifact.artifact_schema_id !== "capture-manifest") {
+      continue;
+    }
+    // SAFETY: validate() parsed this payload against capture-manifest@1.0 above.
+    const manifest = artifact.payload as unknown as CaptureManifest;
+    if (artifact.incident_id !== manifest.incident_id ||
+        (artifact.run_id ?? undefined) !== manifest.run_id) {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "capture manifest Incident or Run does not match its envelope",
+          contentHashValue,
+          {
+            manifest_incident_id: manifest.incident_id,
+            manifest_run_id: manifest.run_id,
+            envelope_incident_id: artifact.incident_id,
+            envelope_run_id: artifact.run_id ?? null,
+          },
+        ),
+      );
+    }
+    const selfCheck = contentHash(stripKey(manifest as unknown as JsonValue, "manifest_digest"));
+    if (!selfCheck.ok || selfCheck.value !== manifest.manifest_digest) {
+      errors.push(
+        integrityError(
+          "CHANGED_CONTENT",
+          "capture manifest manifest_digest does not match its payload",
+          contentHashValue,
+          {
+            expected: selfCheck.ok ? selfCheck.value : null,
+            actual: manifest.manifest_digest,
+          },
+        ),
+      );
+    }
+    if (manifest.provider_class === "fixture") {
+      errors.push(
+        integrityError(
+          "MALFORMED_CONTRACT",
+          "capture manifest provider_class fixture is not presentation-acceptable",
+          contentHashValue,
+          { provider_class: manifest.provider_class },
+        ),
+      );
+    }
+    for (const record of manifest.role_records) {
+      const expectedSchema = TERMINAL_SCHEMA_BY_ROLE[record.role];
+      if (record.artifact_ref !== undefined) {
+        const linked = artifacts.get(record.artifact_ref);
+        if (linked === undefined) {
+          errors.push(
+            integrityError(
+              "MISSING_ARTIFACT",
+              `capture manifest role ${record.role} references an absent artifact`,
+              contentHashValue,
+              { role: record.role, artifact_ref: record.artifact_ref },
+            ),
+          );
+        } else {
+          if (
+            linked.incident_id !== manifest.incident_id ||
+            (linked.run_id ?? undefined) !== manifest.run_id
+          ) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} artifact Incident or Run does not match the manifest`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  artifact_ref: record.artifact_ref,
+                  artifact_incident_id: linked.incident_id,
+                  artifact_run_id: linked.run_id ?? null,
+                },
+              ),
+            );
+          }
+          if (linked.artifact_schema_id !== expectedSchema) {
+            errors.push(
+              integrityError(
+                "MALFORMED_CONTRACT",
+                `capture manifest role ${record.role} artifact schema does not match the role`,
+                contentHashValue,
+                {
+                  role: record.role,
+                  expected_schema: expectedSchema,
+                  actual_schema: linked.artifact_schema_id,
+                },
+              ),
+            );
+          }
+        }
+      } else if (record.status === "succeeded") {
+        errors.push(
+          integrityError(
+            "MISSING_ARTIFACT",
+            `capture manifest role ${record.role} succeeded without a sealed artifact`,
+            contentHashValue,
+            { role: record.role, status: record.status },
+          ),
+        );
+      }
+      const recordedAgentIds = modelUseAgentIds.get(manifest.incident_id);
+      for (const agentId of record.model_use_agent_ids) {
+        if (recordedAgentIds === undefined || !recordedAgentIds.has(agentId)) {
+          errors.push(
+            integrityError(
+              "MISSING_ARTIFACT",
+              `capture manifest role ${record.role} model-use agent ${JSON.stringify(agentId)} has no model_use journal record`,
+              contentHashValue,
+              { role: record.role, agent_id: agentId },
+            ),
+          );
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) {
     return err(errors);
   }
   return ok({ manifest, incidents, artifacts });
+}
+
+/** The payload with one top-level key removed, for digest self-checks. */
+function stripKey(value: JsonValue, key: string): JsonValue {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const { [key]: _removed, ...rest } = value as Record<string, JsonValue>;
+  return rest;
 }

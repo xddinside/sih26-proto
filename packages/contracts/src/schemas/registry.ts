@@ -9,6 +9,12 @@
  */
 import type { JsonValue } from "../result.js";
 
+import {
+  captureManifestSchema,
+  implementedDiffSchema,
+  orchestratorReportSchema,
+  remediationDraftSchema,
+} from "./agent.js";
 import { artifactEnvelopeSchema } from "./artifact-envelope.js";
 import { brokerReceiptSchema } from "./broker-receipt.js";
 import { evidenceItemSchema, evidenceSetSchema } from "./evidence.js";
@@ -16,6 +22,7 @@ import { gateEvaluationSchema } from "./gate-evaluation.js";
 import {
   fusionJudgeOutputSchema,
   fusionParticipantOutputSchema,
+  fusionRunArtifactSchema,
   fusionSynthesizerOutputSchema,
 } from "./fusion.js";
 import {
@@ -70,6 +77,7 @@ export const SCHEMA_REGISTRY = {
   "fusion-participant-output": versionMap(fusionParticipantOutputSchema),
   "fusion-judge-output": versionMap(fusionJudgeOutputSchema),
   "fusion-synthesizer-output": versionMap(fusionSynthesizerOutputSchema),
+  "fusion-run-artifact": versionMap(fusionRunArtifactSchema),
   "incident-brief": versionMap(incidentBriefSchema),
   "diagnosis-report": versionMap(diagnosisReportSchema),
   "remediation-proposal": versionMap(remediationProposalSchema),
@@ -86,6 +94,10 @@ export const SCHEMA_REGISTRY = {
   "evidence-hash-input": versionMap(evidenceHashInputSchema),
   "incident-key-input": versionMap(incidentKeyInputSchema),
   "delivery-key-input": versionMap(deliveryKeyInputSchema),
+  "remediation-draft": versionMap(remediationDraftSchema),
+  "implemented-diff": versionMap(implementedDiffSchema),
+  "orchestrator-report": versionMap(orchestratorReportSchema),
+  "capture-manifest": versionMap(captureManifestSchema),
 } as const;
 
 /** The names of every registered schema. */
