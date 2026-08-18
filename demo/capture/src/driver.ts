@@ -46,6 +46,7 @@ import type {
   EvidenceBundle,
 } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import { assembleVerdictInput } from "../../../packages/pi-skills/src/consolidation.js"
+import { fusionRunArtifactWire } from "../../../packages/pi-skills/src/fusion/traces.js"
 
 import {
   APPLICABILITY_TOOL_CATALOG,
@@ -953,6 +954,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
             "fusion-participant-output": "1.0",
             "fusion-judge-output": "1.0",
             "fusion-synthesizer-output": "1.0",
+            "fusion-run-artifact": "1.0",
           },
           scenario: `payment charge failure (${facts.seed})`,
           mode: options.mode ?? "full-capture",
@@ -1040,6 +1042,19 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     console.log(
       `[capture] fusion round=${round?.round} valid=${round?.valid} participants=${round?.participantRuns.map((participant) => (participant.wellFormed ? "ok" : "failed")).join(",")}`,
     )
+
+    // Seal the Fusion Run Artifact for every recorded round. The orchestrator
+    // reruns invalid rounds; each round's artifact (including failed or
+    // aborted ones) persists for inspection and is excluded from later model
+    // context by contract (`exclude_from_context: true`).
+    for (const fusionRound of diagnoseOrchestrator.fusionRounds) {
+      await diagnoseProposals.sealArtifact({
+        schemaId: "fusion-run-artifact",
+        schemaVersion: "1.0",
+        payload: fusionRunArtifactWire(fusionRound.artifact),
+        producer: { skill: "sih-fusion", skill_version: "1.0" },
+      })
+    }
 
     // Seal the Fusion role outputs (participants, Judge, Synthesizer) as
     // inspectable artifacts. The Synthesizer output is the durable input.

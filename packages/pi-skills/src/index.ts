@@ -97,6 +97,7 @@ export {
   artifactDigest,
   buildLaterContext,
   assertExcludedFromContext,
+  fusionRunArtifactWire,
 } from "./fusion/traces.js"
 export type {
   FusionRunArtifact,
@@ -104,6 +105,7 @@ export type {
   FusionCallKind,
   FusionPerspective,
   FusionRunMetrics,
+  FusionRunArtifactWire,
 } from "./fusion/traces.js"
 
 export {

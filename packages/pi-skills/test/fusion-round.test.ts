@@ -10,6 +10,7 @@ import { isRoundValid, runFusionRound } from "../src/fusion/fusion-runtime.js"
 import {
   assertExcludedFromContext,
   buildLaterContext,
+  fusionRunArtifactWire,
 } from "../src/fusion/traces.js"
 import {
   REVISION_ID,
@@ -354,5 +355,108 @@ describe("trace exclusion from later model context", () => {
     // A context that leaks a participant trace fails the exclusion check.
     const leaked = `${later}\n${participantText}`
     expect(assertExcludedFromContext(leaked, result.artifact)).toBe(false)
+  })
+
+  test("fusionRunArtifactWire maps camelCase traces to the snake_case sealed shape", () => {
+    const artifact = {
+      schema_version: "1.0" as const,
+      round: 2,
+      revisionId: REVISION_ID,
+      task: TASK,
+      brief: "Analyze as a card-reader specialist.",
+      calls: [
+        {
+          kind: "participant" as const,
+          role: "fusion-participant",
+          model: "stub-participant-1",
+          status: "succeeded" as const,
+          systemPrompt: "You are a participant.",
+          inputPrompt: "Analyze from your perspective.",
+          output: "participant hypotheses",
+          attempts: 1,
+          retryDelaysMs: [0, 100],
+          promptTokens: 10,
+          completionTokens: 5,
+          startedAt: "2026-08-16T00:00:00Z",
+          durationMs: 100,
+          turns: 1,
+          toolCalls: 0,
+        },
+      ],
+      status: "succeeded" as const,
+      excludeFromContext: true as const,
+      sealedAt: "2026-08-16T00:00:02Z",
+      perspectives: [
+        { participantId: "p-1", perspective: "card-reader specialist", order: 1 },
+      ],
+      metrics: {
+        participants: [
+          { participantId: "p-1", status: "succeeded" as const, turns: 1, toolCalls: 0, durationMs: 100 },
+        ],
+        judge: { status: "succeeded" as const, turns: 1, toolCalls: 0, durationMs: 90 },
+        synthesizer: null,
+        totalWallClockMs: 200,
+      },
+    }
+
+    const wire = fusionRunArtifactWire(artifact)
+    expect(wire).toEqual({
+      schema_version: "1.0",
+      round: 2,
+      revision_id: REVISION_ID,
+      task: TASK,
+      brief: "Analyze as a card-reader specialist.",
+      calls: [
+        {
+          kind: "participant",
+          role: "fusion-participant",
+          model: "stub-participant-1",
+          status: "succeeded",
+          system_prompt: "You are a participant.",
+          input_prompt: "Analyze from your perspective.",
+          output: "participant hypotheses",
+          attempts: 1,
+          retry_delays_ms: [0, 100],
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          started_at: "2026-08-16T00:00:00Z",
+          duration_ms: 100,
+          turns: 1,
+          tool_calls: 0,
+        },
+      ],
+      status: "succeeded",
+      exclude_from_context: true,
+      sealed_at: "2026-08-16T00:00:02Z",
+      perspectives: [
+        { participant_id: "p-1", perspective: "card-reader specialist", order: 1 },
+      ],
+      metrics: {
+        participants: [
+          { participant_id: "p-1", status: "succeeded", turns: 1, tool_calls: 0, duration_ms: 100 },
+        ],
+        judge: { status: "succeeded", turns: 1, tool_calls: 0, duration_ms: 90 },
+        synthesizer: null,
+        total_wall_clock_ms: 200,
+      },
+    })
+  })
+
+  test("fusionRunArtifactWire omits optional fields when absent", () => {
+    const wire = fusionRunArtifactWire({
+      schema_version: "1.0",
+      round: 1,
+      revisionId: REVISION_ID,
+      task: TASK,
+      calls: [],
+      status: "failed",
+      statusReason: "Synthesizer output malformed",
+      excludeFromContext: true,
+      sealedAt: "2026-08-16T00:00:00Z",
+    })
+    expect(wire.brief).toBeUndefined()
+    expect(wire.status_reason).toBe("Synthesizer output malformed")
+    expect(wire.perspectives).toBeUndefined()
+    expect(wire.metrics).toBeUndefined()
   })
 })

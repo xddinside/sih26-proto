@@ -399,7 +399,7 @@ export class RealAgentKit {
       provider_class: "real",
       provider: this.options.model.provider,
       model: this.options.model.id,
-      reasoning: this.options.reasoning ?? "medium",
+      reasoning: this.options.reasoning ?? "high",
       pi_agent_core_version: this.options.piAgentCoreVersion,
       pi_ai_version: this.options.piAiVersion,
       skill_tree_digest: this.options.skillTreeDigest,

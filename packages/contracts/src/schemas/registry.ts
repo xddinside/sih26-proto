@@ -22,6 +22,7 @@ import { gateEvaluationSchema } from "./gate-evaluation.js";
 import {
   fusionJudgeOutputSchema,
   fusionParticipantOutputSchema,
+  fusionRunArtifactSchema,
   fusionSynthesizerOutputSchema,
 } from "./fusion.js";
 import {
@@ -76,6 +77,7 @@ export const SCHEMA_REGISTRY = {
   "fusion-participant-output": versionMap(fusionParticipantOutputSchema),
   "fusion-judge-output": versionMap(fusionJudgeOutputSchema),
   "fusion-synthesizer-output": versionMap(fusionSynthesizerOutputSchema),
+  "fusion-run-artifact": versionMap(fusionRunArtifactSchema),
   "incident-brief": versionMap(incidentBriefSchema),
   "diagnosis-report": versionMap(diagnosisReportSchema),
   "remediation-proposal": versionMap(remediationProposalSchema),

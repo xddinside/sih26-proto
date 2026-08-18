@@ -589,7 +589,7 @@ async function main(): Promise<void> {
   if (command === "run") {
     const run = Number(flagValue("--run") ?? "0")
     if (run !== 1 && run !== 2) {
-      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline] [--agents fixture|real] [--mode rehearsal|full] [--provider slug] [--model id] [--reasoning off|low|medium|high]")
+      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline] [--agents fixture|real] [--mode rehearsal|full] [--provider slug] [--model id] [--reasoning minimal|low|medium|high|xhigh]")
       process.exit(2)
     }
     const agents = (flagValue("--agents") ?? "fixture") as "fixture" | "real"
@@ -606,9 +606,10 @@ async function main(): Promise<void> {
       console.error("--agents=real requires OPENCODE_API_KEY")
       process.exit(2)
     }
-    const reasoning = flagValue("--reasoning") ?? "medium"
-    if (reasoning !== "off" && reasoning !== "low" && reasoning !== "medium" && reasoning !== "high") {
-      console.error("--reasoning must be off, low, medium, or high")
+    const reasoning = flagValue("--reasoning") ?? "high"
+    const reasoningLevels = ["minimal", "low", "medium", "high", "xhigh"]
+    if (!reasoningLevels.includes(reasoning)) {
+      console.error("--reasoning must be minimal, low, medium, high, or xhigh")
       process.exit(2)
     }
     await captureRun(run as 1 | 2, {

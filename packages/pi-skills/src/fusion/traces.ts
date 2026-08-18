@@ -144,3 +144,157 @@ export function assertExcludedFromContext(
     .filter((output): output is string => output !== null)
   return traces.every((trace) => !context.includes(trace))
 }
+
+/** The snake_case wire shape of a sealed Fusion Run Artifact. */
+export interface FusionRunArtifactWire {
+  schema_version: "1.0"
+  round: number
+  revision_id: string
+  task: string
+  brief?: string
+  calls: {
+    kind: FusionPipelineCall["kind"]
+    role: string
+    model: string
+    status: FusionPipelineCall["status"]
+    system_prompt: string
+    input_prompt: string
+    output: string | null
+    failure_message?: string
+    attempts: number
+    retry_delays_ms: number[]
+    prompt_tokens: number
+    completion_tokens: number
+    started_at: string
+    duration_ms: number
+    turns?: number
+    tool_calls?: number
+  }[]
+  status: FusionRunArtifact["status"]
+  status_reason?: string
+  exclude_from_context: true
+  sealed_at: string
+  perspectives?: {
+    participant_id: string
+    perspective: string
+    order: number
+  }[]
+  metrics?: {
+    participants: {
+      participant_id: string
+      status: FusionRunMetrics["participants"][number]["status"]
+      turns: number
+      tool_calls: number
+      duration_ms: number
+    }[]
+    judge: {
+      status: FusionRunMetrics["judge"] extends infer T
+        ? T extends { status: infer S }
+          ? S
+          : never
+        : never
+      turns: number
+      tool_calls: number
+      duration_ms: number
+    } | null
+    synthesizer: {
+      status: FusionRunMetrics["synthesizer"] extends infer T
+        ? T extends { status: infer S }
+          ? S
+          : never
+        : never
+      turns: number
+      tool_calls: number
+      duration_ms: number
+    } | null
+    total_wall_clock_ms: number
+  }
+}
+
+const roleMetricWire = (
+  metric: NonNullable<FusionRunMetrics["judge"]>,
+): {
+  status: FusionRunMetrics["judge"] extends infer T
+    ? T extends { status: infer S }
+      ? S
+      : never
+    : never
+  turns: number
+  tool_calls: number
+  duration_ms: number
+} => ({
+  status: metric.status,
+  turns: metric.turns,
+  tool_calls: metric.toolCalls,
+  duration_ms: metric.durationMs,
+})
+
+/** Convert a camelCase `FusionRunArtifact` to its snake_case sealed shape. */
+export function fusionRunArtifactWire(
+  artifact: FusionRunArtifact
+): FusionRunArtifactWire {
+  return {
+    schema_version: "1.0",
+    round: artifact.round,
+    revision_id: artifact.revisionId,
+    task: artifact.task,
+    ...(artifact.brief === undefined ? {} : { brief: artifact.brief }),
+    calls: artifact.calls.map((call) => ({
+      kind: call.kind,
+      role: call.role,
+      model: call.model,
+      status: call.status,
+      system_prompt: call.systemPrompt,
+      input_prompt: call.inputPrompt,
+      output: call.output,
+      ...(call.failureMessage === undefined
+        ? {}
+        : { failure_message: call.failureMessage }),
+      attempts: call.attempts,
+      retry_delays_ms: call.retryDelaysMs,
+      prompt_tokens: call.promptTokens,
+      completion_tokens: call.completionTokens,
+      started_at: call.startedAt,
+      duration_ms: call.durationMs,
+      ...(call.turns === undefined ? {} : { turns: call.turns }),
+      ...(call.toolCalls === undefined ? {} : { tool_calls: call.toolCalls }),
+    })),
+    status: artifact.status,
+    ...(artifact.statusReason === undefined
+      ? {}
+      : { status_reason: artifact.statusReason }),
+    exclude_from_context: artifact.excludeFromContext,
+    sealed_at: artifact.sealedAt,
+    ...(artifact.perspectives === undefined
+      ? {}
+      : {
+          perspectives: artifact.perspectives.map((p) => ({
+            participant_id: p.participantId,
+            perspective: p.perspective,
+            order: p.order,
+          })),
+        }),
+    ...(artifact.metrics === undefined
+      ? {}
+      : {
+          metrics: {
+            participants: artifact.metrics.participants.map((p) => ({
+              participant_id: p.participantId,
+              status: p.status,
+              turns: p.turns,
+              tool_calls: p.toolCalls,
+              duration_ms: p.durationMs,
+            })),
+            judge:
+              artifact.metrics.judge === null
+                ? null
+                : roleMetricWire(artifact.metrics.judge),
+            synthesizer:
+              artifact.metrics.synthesizer === null
+                ? null
+                : roleMetricWire(artifact.metrics.synthesizer),
+            total_wall_clock_ms: artifact.metrics.totalWallClockMs,
+          },
+        }),
+  }
+}
