@@ -47,6 +47,27 @@ export type {
 } from "./session.js"
 
 export {
+  PiRoleSession,
+  RoleSessionError,
+} from "./role/role-session.js"
+export type {
+  RoleSessionOptions,
+  RoleSessionResult,
+  RoleSessionStatus,
+} from "./role/role-session.js"
+export {
+  DEFAULT_ROLE_LIMITS,
+} from "./role/limits.js"
+export type { RoleLimits } from "./role/limits.js"
+export { effectiveToolSet } from "./role/authority.js"
+export type { ToolAuthority } from "./role/authority.js"
+export { createReadTool } from "./role/broker-tools.js"
+export type { BrokerReadToolOptions } from "./role/broker-tools.js"
+export { createTerminalTool, TerminalToolError } from "./role/terminal-tools.js"
+export type { TerminalTool, TerminalToolOptions } from "./role/terminal-tools.js"
+export { redactSecrets, containsNoSecrets } from "./role/redact.js"
+
+export {
   PARTICIPANT_SYSTEM_PROMPT,
   JUDGE_SYSTEM_PROMPT,
   SYNTHESIZER_SYSTEM_PROMPT,
