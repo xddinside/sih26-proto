@@ -207,6 +207,10 @@ export function createReviewPrompt(options: {
   role: string
   candidateHash: string
   hypothesis: string
+  /** The accepted Remediation (serialized Remediation Draft), when sealed. */
+  acceptedRemediation?: string
+  /** The accepted Recovery Point hash the reviewer can cite (R8). */
+  recoveryPointHash: string
   revisionId: string
   diffText: string
   changedFiles: readonly string[]
@@ -218,6 +222,10 @@ export function createReviewPrompt(options: {
     `Review role ${options.role} against the candidate ${options.candidateHash}.`,
     "",
     `## Accepted Hypothesis\n${options.hypothesis}`,
+    ...(options.acceptedRemediation === undefined
+      ? []
+      : ["", "## Accepted Remediation", options.acceptedRemediation]),
+    `## Recovery Point\n${options.recoveryPointHash}`,
     `## Evidence Set revision id\n${options.revisionId}`,
     "",
     "## Candidate diff",

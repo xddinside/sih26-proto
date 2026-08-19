@@ -185,6 +185,8 @@ export type {
 export {
   parseTestReport,
   outcomeFromReceipt,
+  outcomeFromRuns,
+  runsMatchReceipt,
   detectFlakyPass,
   assertReceiptBinding,
   assertT5Selection,
@@ -195,7 +197,19 @@ export type {
   TestLayerCode,
   ReceiptOutcome,
   PinnedToolEntry,
+  AssignedTestReceipt,
 } from "./tests/test-runner.js"
+
+export {
+  createAssignedTestTool,
+} from "./role/test-tools.js"
+export type { AssignedTestToolOptions } from "./role/test-tools.js"
+
+export { runRealVerifyRound } from "./verify/verify-real.js"
+export type {
+  RealVerifyRoundOptions,
+  VerifyRoundResult,
+} from "./verify/verify-real.js"
 
 export {
   PiOrchestratorExtension,

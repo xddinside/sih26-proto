@@ -28,10 +28,13 @@ import type {
   EvidenceItem,
   IncidentBrief,
   JournalEvent,
+  ReviewReport,
+  TestReport,
 } from "@sih/contracts/types"
 import type { HashString } from "@sih/contracts/hashes"
 
 import { bootstrap } from "@sih/control-plane/src/bootstrap.js"
+import type { Runtime } from "@sih/control-plane/src/bootstrap.js"
 import type { Config } from "@sih/control-plane/src/config.js"
 import type { ControlPlane } from "@sih/control-plane/src/core/state-machine.js"
 import * as cmd from "@sih/control-plane/src/core/journal-commands.js"
@@ -52,6 +55,7 @@ import type {
 } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import { assembleVerdictInput } from "../../../packages/pi-skills/src/consolidation.js"
 import { fusionRunArtifactWire } from "../../../packages/pi-skills/src/fusion/traces.js"
+import type { AssignedTestReceipt, TestLayerCode } from "../../../packages/pi-skills/src/tests/test-runner.js"
 
 import {
   APPLICABILITY_TOOL_CATALOG,
@@ -522,6 +526,8 @@ function realTestRunsByLayer(options: {
   probe9: shop.ProbeOutcome
   rehearsal: { g2: number | null; g3: number | null; g4: number | null; calls: number }
   drill: { restored: boolean; output: string }
+  /** The resolver's ownership-map selection the T5 report must bind to. */
+  t5Selection: string
 }): Record<string, {
   tool: string
   toolVersion: string
@@ -529,7 +535,7 @@ function realTestRunsByLayer(options: {
   receiptRef: string
   runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[]
 }> {
-  const { run, candidateBuild, t3Run, t5Run, probe4, probe9, rehearsal, drill } = options
+  const { run, candidateBuild, t3Run, t5Run, probe4, probe9, rehearsal, drill, t5Selection } = options
   const now = new Date().toISOString()
   const runOf = (result: boolean | number, layer: string, extra: unknown, detail?: string) => {
     const outcome = result === true || result === 1 ? "pass" : "fail"
@@ -572,7 +578,7 @@ function realTestRunsByLayer(options: {
     T5: {
       tool: TEST_TOOLS.T5.tool,
       toolVersion: TEST_TOOLS.T5.tool_version,
-      target: TEST_TOOLS.T5.target,
+      target: t5Selection,
       receiptRef: TEST_RECEIPT_BY_LAYER.T5,
       runs: [{
         run_hash: hashOf({ layer: "T5", output: t5Run.output }),
@@ -1191,6 +1197,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       "repair",
     )
     const baseRef = hashOf({ repo: "demo-repo", commit: facts.seed, cardJs: "seeded-source" })
+    // The accepted Remediation the Verify reviewers consume, from the real
+    // repair round's sealed planner draft.
+    let acceptedRemediationText: string | undefined
     const repair = await repairOrchestrator.driveRepair({
       acceptedHypothesis: hypotheses.h1,
       disposition: "allowed",
@@ -1224,8 +1233,8 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       runRepair:
         kit === null
           ? undefined
-          : (round) =>
-              kit.runRepair({
+          : async (round) => {
+              const result = await kit.runRepair({
                 ...round,
                 revisionId,
                 acceptedHypothesis: JSON.stringify(round.acceptedHypothesis),
@@ -1236,7 +1245,13 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
                 declaredSurfaces: round.changedSurfaces,
                 allowedChangedFiles: round.changedFiles,
                 baseFiles: new Map(Object.entries(options.agentSeedFiles ?? {})),
-              }),
+              })
+              acceptedRemediationText =
+                result.planner?.draft === undefined
+                  ? undefined
+                  : JSON.stringify(result.planner.draft)
+              return result
+            },
     })
     // The Orchestrator computed the candidate hash deterministically; the
     // detail is the content hash the gate and reports bind to.
@@ -1412,63 +1427,43 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await releaseAdapter.stopCandidate()
     console.log(`[capture] verify: isolated env checks done (T4=${probe4.ok}/${probe4.total}, T9=${probe9.ok}/${probe9.total}, T13 spans=${rehearsal.calls}, T12 ${drill.restored ? "ok" : "failed"})`)
 
-    // Seal the review and test reports bound to the candidate hash. Real-agent
-    // sessions sealed them through their terminal tools already.
+    // Seal the review and test reports bound to the candidate hash. The
+    // deterministic applicability resolver alone selects which review roles
+    // and test layers run; non-applicable roles never run and never submit.
     const diffText = kit === null ? implementerDiffText() : kit.implementerDiffText()
-    const reviewReports = kit === null
-      ? buildReviewReports({
-          incidentId,
-          runId,
-          candidateHash,
-          seed: facts.seed,
-          recoveryPointHash,
-          diffHash: hashOf({ base: baseRef, diff: diffText }),
-          baseRef,
-          metricId: ids.metricId,
-          r1Major: run === 2,
-        })
-      : await kit.runReviews({
-          incidentId,
-          runId,
-          attempt: 1,
-          roles: ["R1", "R2", "R3", "R4", "R8"],
-          candidateHash,
-          hypothesis: hypotheses.h1.causal_claim.defect,
-          revisionId,
-          diffText,
-          changedFiles: ["src/payment/card.js"],
-          recoveryPointHash,
-          inputRefs: [ids.metricId, ids.codeLocationId, RECEIPT_IDS.pr],
-        })
-    const testReports = kit === null
-      ? buildTestReports({
-          incidentId,
-          runId,
-          candidateHash,
-          run2: run === 2,
-          t5Selection,
-          runsByLayer: {},
-        })
-      : await kit.runTests({
-          incidentId,
-          runId,
-          attempt: 1,
-          candidateHash,
-          diffText,
-          changedFiles: ["src/payment/card.js"],
-          layers: ["T1", "T2", "T3", "T4", "T5", "T7", "T9", "T10", "T12", "T13"],
-          runsByLayer: realTestRunsByLayer({
-            run,
-            candidateBuild,
-            t3Run,
-            t5Run,
-            probe4,
-            probe9,
-            rehearsal,
-            drill,
-          }),
-        })
+    const applicableReviewRoles = applicability.value.required.filter((code) => code.startsWith("R"))
+    const applicableTestLayers = [
+      ...new Set([
+        ...applicability.value.required.filter((code) => code.startsWith("T")),
+        ...Object.keys(applicability.value.triggered).filter((code) => code.startsWith("T")),
+      ]),
+    ].sort()
+    console.log(`[capture] verify applicable roles: reviews=${applicableReviewRoles.join(",")} tests=${applicableTestLayers.join(",")}`)
+
+    let reviewReports: ReviewReport[] = []
+    let testReports: TestReport[] = []
     if (kit === null) {
+      // Fixture path only: the canned builders stay available as explicit
+      // offline test fixtures and are never used by a real-agent capture.
+      reviewReports = buildReviewReports({
+        incidentId,
+        runId,
+        candidateHash,
+        seed: facts.seed,
+        recoveryPointHash,
+        diffHash: hashOf({ base: baseRef, diff: diffText }),
+        baseRef,
+        metricId: ids.metricId,
+        r1Major: run === 2,
+      })
+      testReports = buildTestReports({
+        incidentId,
+        runId,
+        candidateHash,
+        run2: run === 2,
+        t5Selection,
+        runsByLayer: {},
+      })
       for (const report of reviewReports) {
         await verifyProposals.sealArtifact({
           schemaId: "review-report",
@@ -1485,6 +1480,61 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           producer: { skill: TEST_SKILL_BY_LAYER[report.layer] ?? "sih-test", skill_version: "1.0" },
         })
       }
+    } else {
+      // Real-agent path: the resolver-selected roles run as fresh sessions,
+      // and the deterministic receipts own every test outcome.
+      const testReceipts: Record<string, AssignedTestReceipt> = {}
+      for (const [layer, entry] of Object.entries(realTestRunsByLayer({
+        run,
+        candidateBuild,
+        t3Run,
+        t5Run,
+        probe4,
+        probe9,
+        rehearsal,
+        drill,
+        t5Selection,
+      }))) {
+        testReceipts[layer] = { layer: layer as TestLayerCode, ...entry }
+      }
+      const verifyResult = await kit.runVerify({
+        incidentId,
+        runId,
+        attempt: 1,
+        candidateHash,
+        revisionId,
+        hypothesis: hypotheses.h1.causal_claim.defect,
+        diffText,
+        changedFiles: ["src/payment/card.js"],
+        recoveryPointHash,
+        required: applicability.value.required,
+        triggered: applicability.value.triggered,
+        t5Selection,
+        acceptedRemediation: acceptedRemediationText,
+        inputRefs: [ids.metricId, ids.codeLocationId, RECEIPT_IDS.pr],
+        testReceipts,
+      })
+      if (!verifyResult.valid) {
+        // A required review or test role is missing, malformed, timed out,
+        // cancelled, or failed: stop Verify safely and keep every session
+        // record inspectable. Never a canned replacement.
+        console.log(`[capture] verify: invalid round (${verifyResult.failure?.role ?? "unknown"}); failing the run`)
+        return await failVerifyAndReturn({
+          run,
+          savedId,
+          incidentId,
+          runId,
+          candidateHash,
+          cp,
+          verifyProposals,
+          kit,
+          mode: options.mode ?? "full-capture",
+          runtime,
+          stageReason: verifyResult.failure?.message ?? "a required Verify role failed",
+        })
+      }
+      reviewReports = verifyResult.reviews
+      testReports = verifyResult.tests
     }
 
     // Deterministic verdict: the Control Plane computes it; no model votes.
@@ -1532,55 +1582,19 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         },
         producer: { skill: "sih-orchestrator", skill_version: "1.0" },
       })
-      await verifyProposals.stageCommand({
-        kind: "stage-status",
-        stage: "verify",
-        to: "failed",
-        artifact_ref: verificationReportRef,
-        candidate_hash: candidateHash,
-      })
-      if (kit !== null) {
-        await sealRunEnd(kit, {
-          incidentId,
-          runId,
-          mode: options.mode ?? "full-capture",
-          stageOutcomes: {
-            detect: "completed",
-            diagnose: "completed",
-            repair: "completed",
-            verify: "failed",
-          },
-          runContext: runEndContext(run, candidateHash, "verification-failed"),
-        })
-        console.log(`[capture] orchestrator report + capture manifest sealed (failed run)`)
-      }
-      await verifyProposals.failRun("verification-failed")
-      console.log(`[capture] run failed: verification-failed (no Release record, no production Watch Report)`)
-
-      const finalEvents = cp.journal.events(incidentId)
-      const report: CaptureReport = {
+      return await failVerifyAndReturn({
         run,
         savedId,
         incidentId,
         runId,
-        finalSequence: finalEvents.at(-1)?.sequence ?? 0,
-        finalRunState: "failed",
-        finalIncidentState: "open",
-        outcome: null,
-        failureReason: "verification-failed",
         candidateHash,
-        gateVerdicts: cp.gateEvaluations(incidentId, runId).map((gate) => `${gate.gate}:${gate.evaluation.verdict}`),
-        receiptIds: cp.receipts(incidentId, runId).map((receipt) => receipt.receipt_id),
-        artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
-        stageRecords: cp.journal.state(incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
-        agents: kit === null ? "fixture" : "real",
-        manifestSealed: kit !== null,
-        agentRunArtifacts: cp.sealedArtifacts(incidentId).filter(
-          (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
-        ).length,
-      }
-      await runtime.store.close()
-      return report
+        cp,
+        verifyProposals,
+        kit,
+        mode: options.mode ?? "full-capture",
+        runtime,
+        artifactRef: verificationReportRef,
+      })
     }
 
     // Run 1 continues: complete Verify, then Release.
@@ -2203,4 +2217,77 @@ async function sealRunEnd(
     mode: "full-capture",
     scenario: options.runContext.split("\n")[0] ?? "payment charge failure",
   })
+}
+
+/** The shared end of any failed Verify: mark the stage failed, run the
+ * end-of-run Orchestrator + capture manifest for real-agent runs, fail the
+ * run, and return the honest failed CaptureReport. Callers seal any extra
+ * failed-stage evidence (e.g. Run 2's failed T5 item) first. */
+async function failVerifyAndReturn(options: {
+  run: 1 | 2
+  savedId: string
+  incidentId: string
+  runId: string
+  candidateHash: HashString
+  cp: ControlPlane
+  verifyProposals: ControlPlaneProposals
+  kit: RealAgentKit | null
+  mode: "rehearsal" | "full-capture"
+  runtime: Runtime
+  /** The sealed verification report, when a deterministic verdict exists. */
+  artifactRef?: cmd.ArtifactRef
+  /** The stage-failure reason, when no verdict artifact exists. */
+  stageReason?: string
+}): Promise<CaptureReport> {
+  await options.verifyProposals.stageCommand({
+    kind: "stage-status",
+    stage: "verify",
+    to: "failed",
+    ...(options.artifactRef === undefined
+      ? {}
+      : { artifact_ref: options.artifactRef, candidate_hash: options.candidateHash }),
+    ...(options.stageReason === undefined ? {} : { reason: options.stageReason }),
+  })
+  if (options.kit !== null) {
+    await sealRunEnd(options.kit, {
+      incidentId: options.incidentId,
+      runId: options.runId,
+      mode: options.mode,
+      stageOutcomes: {
+        detect: "completed",
+        diagnose: "completed",
+        repair: "completed",
+        verify: "failed",
+      },
+      runContext: runEndContext(options.run, options.candidateHash, "verification-failed"),
+    })
+    console.log(`[capture] orchestrator report + capture manifest sealed (failed run)`)
+  }
+  await options.verifyProposals.failRun("verification-failed")
+  console.log(`[capture] run failed: verification-failed (no Release record, no production Watch Report)`)
+
+  const finalEvents = options.cp.journal.events(options.incidentId)
+  const report: CaptureReport = {
+    run: options.run,
+    savedId: options.savedId,
+    incidentId: options.incidentId,
+    runId: options.runId,
+    finalSequence: finalEvents.at(-1)?.sequence ?? 0,
+    finalRunState: "failed",
+    finalIncidentState: "open",
+    outcome: null,
+    failureReason: "verification-failed",
+    candidateHash: options.candidateHash,
+    gateVerdicts: options.cp.gateEvaluations(options.incidentId, options.runId).map((gate) => `${gate.gate}:${gate.evaluation.verdict}`),
+    receiptIds: options.cp.receipts(options.incidentId, options.runId).map((receipt) => receipt.receipt_id),
+    artifactSchemas: options.cp.sealedArtifacts(options.incidentId).map((artifact) => artifact.artifactRef.schema_id),
+    stageRecords: options.cp.journal.state(options.incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
+    agents: options.kit === null ? "fixture" : "real",
+    manifestSealed: options.kit !== null,
+    agentRunArtifacts: options.cp.sealedArtifacts(options.incidentId).filter(
+      (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
+    ).length,
+  }
+  await options.runtime.store.close()
+  return report
 }

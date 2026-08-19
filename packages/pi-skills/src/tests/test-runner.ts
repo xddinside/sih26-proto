@@ -30,6 +30,75 @@ export interface PinnedToolEntry {
   target: string
 }
 
+/**
+ * The recorded deterministic receipt for one assigned test layer. The receipt
+ * owns the outcome; a Test Agent can inspect it (through its assigned test
+ * tool) but can never change it, mint a new one, or reinterpret a failed run
+ * as passing.
+ */
+export interface AssignedTestReceipt {
+  layer: TestLayerCode
+  tool: string
+  toolVersion: string
+  target: string
+  receiptRef: string
+  runs: {
+    run_hash: string
+    result: "pass" | "fail" | "error"
+    at: string
+    detail?: string
+  }[]
+}
+
+/** The deterministic outcome of a recorded receipt: any fail is a fail, any
+ * error an error, else pass. A model cannot override this mapping. */
+export function outcomeFromRuns(
+  runs: readonly { result: "pass" | "fail" | "error" }[],
+): ReceiptOutcome {
+  if (runs.length === 0) {
+    return "not-run"
+  }
+  if (runs.some((run) => run.result === "fail")) {
+    return "fail"
+  }
+  if (runs.some((run) => run.result === "error")) {
+    return "error"
+  }
+  return "pass"
+}
+
+/** The Test Report's recorded runs must equal the deterministic receipt runs
+ * verbatim: same hashes, same results, same order. The model cannot add,
+ * drop, or relabel a run. */
+export function runsMatchReceipt(
+  reportRuns: readonly { run_hash: string; result: string }[],
+  receiptRuns: readonly { run_hash: string; result: string }[],
+): { match: boolean; reason: string } {
+  if (reportRuns.length !== receiptRuns.length) {
+    return {
+      match: false,
+      reason: `report records ${reportRuns.length} runs; the receipt records ${receiptRuns.length}`,
+    }
+  }
+  for (let index = 0; index < receiptRuns.length; index += 1) {
+    const reportRun = reportRuns[index]
+    const receiptRun = receiptRuns[index]
+    if (reportRun.run_hash !== receiptRun.run_hash) {
+      return {
+        match: false,
+        reason: `run ${index + 1} hash does not match the receipt`,
+      }
+    }
+    if (reportRun.result !== receiptRun.result) {
+      return {
+        match: false,
+        reason: `run ${index + 1} result ${reportRun.result} does not match the receipt result ${receiptRun.result}`,
+      }
+    }
+  }
+  return { match: true, reason: "runs match the deterministic receipt" }
+}
+
 /** Parse and validate a Test Report v1 against the registry schema. */
 export function parseTestReport(text: string): TestReport | null {
   const start = text.indexOf("{")

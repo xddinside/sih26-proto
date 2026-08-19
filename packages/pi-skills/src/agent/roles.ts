@@ -34,10 +34,11 @@ import { PiRoleSession } from "../role/role-session.js"
 import type { RoleSessionPhase } from "../role/role-session.js"
 import type { RoleLimits } from "../role/limits.js"
 import { createReadTool } from "../role/broker-tools.js"
+import { createAssignedTestTool } from "../role/test-tools.js"
 import { createTerminalTool } from "../role/terminal-tools.js"
 import type { FusionSealSurface } from "../fusion/fusion-real.js"
 import type { ReviewRoleCode } from "../reviews/review-runner.js"
-import type { TestLayerCode } from "../tests/test-runner.js"
+import type { AssignedTestReceipt, TestLayerCode } from "../tests/test-runner.js"
 
 /** Everything a real role session needs to run. */
 export interface AgentSessionKit {
@@ -101,6 +102,8 @@ interface RoleSessionRunOptions {
   schemaVersion: string
   skill: string
   tools?: readonly string[]
+  /** Extra registered tools beyond the read/worktree/terminal defaults. */
+  extraTools?: AgentTool<any>[]
 }
 
 async function runRoleSession<T>(
@@ -137,6 +140,9 @@ async function runRoleSession<T>(
   }
   if (options.kit.worktree !== undefined) {
     registeredTools.push(...createWorktreeTools(options.kit.worktree))
+  }
+  if (options.extraTools !== undefined) {
+    registeredTools.push(...options.extraTools)
   }
   registeredTools.push(terminal.tool)
   const toolNames = authorityTools(options.terminalName, [
@@ -406,6 +412,11 @@ export interface ReviewRoleOptions {
   revision: number
   candidateHash: string
   hypothesis: string
+  /** The accepted Remediation (serialized Remediation Draft), when one was
+   * sealed; the reviewer consumes it, never a repair scratchpad. */
+  acceptedRemediation?: string
+  /** The accepted Recovery Point hash the reviewer can cite (R8). */
+  recoveryPointHash: string
   revisionId: string
   diffText: string
   changedFiles: readonly string[]
@@ -436,6 +447,8 @@ export function runReviewRole(
       role: options.role,
       candidateHash: options.candidateHash,
       hypothesis: options.hypothesis,
+      acceptedRemediation: options.acceptedRemediation,
+      recoveryPointHash: options.recoveryPointHash,
       revisionId: options.revisionId,
       diffText: options.diffText,
       changedFiles: options.changedFiles,
@@ -471,6 +484,9 @@ export interface TestRoleOptions {
   candidateHash: string
   diffText: string
   changedFiles: readonly string[]
+  /** The recorded deterministic receipt for this layer; the session's only
+   * test tool returns it. */
+  assignedReceipt?: AssignedTestReceipt
 }
 
 const TEST_SKILL_BY_LAYER: Record<string, string> = {
@@ -516,6 +532,15 @@ export function runTestRole(
     schemaVersion: "1.0",
     skill: TEST_SKILL_BY_LAYER[options.layer] ?? "sih-test-unit",
     roleName: "test",
+    extraTools:
+      options.assignedReceipt === undefined
+        ? undefined
+        : [
+            createAssignedTestTool({
+              layer: options.layer,
+              receipt: options.assignedReceipt,
+            }),
+          ],
   })
 }
 

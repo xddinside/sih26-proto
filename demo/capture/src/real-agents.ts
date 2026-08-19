@@ -18,15 +18,14 @@ import type { FusionSealSurface } from "../../../packages/pi-skills/src/fusion/f
 import type { AgentSessionRecord, AgentSessionKit } from "../../../packages/pi-skills/src/agent/roles.js"
 import {
   runOrchestratorRole,
-  runReviewRole,
-  runTestRole,
 } from "../../../packages/pi-skills/src/agent/roles.js"
 import { runRealRepairRound } from "../../../packages/pi-skills/src/repair/repair-real.js"
 import type { RepairRoundResult } from "../../../packages/pi-skills/src/repair/repair-real.js"
+import { runRealVerifyRound } from "../../../packages/pi-skills/src/verify/verify-real.js"
+import type { VerifyRoundResult } from "../../../packages/pi-skills/src/verify/verify-real.js"
+import type { AssignedTestReceipt } from "../../../packages/pi-skills/src/tests/test-runner.js"
 import type {
   OrchestratorReport,
-  ReviewReport,
-  TestReport,
   CaptureManifest,
   CaptureManifestRoleRecord,
   AgentRoleName,
@@ -36,8 +35,6 @@ import type { HashString } from "@sih/contracts/hashes"
 import type { ModelGateway, ReadBroker, LeaseRef } from "@sih/brokers"
 import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import type { RoleLimits } from "../../../packages/pi-skills/src/role/limits.js"
-import type { ReviewRoleCode } from "../../../packages/pi-skills/src/reviews/review-runner.js"
-import type { TestLayerCode } from "../../../packages/pi-skills/src/tests/test-runner.js"
 
 /** One role session ran; the kit keeps these for the capture manifest. */
 export type KitSessionRecord = AgentSessionRecord
@@ -225,89 +222,61 @@ export class RealAgentKit {
     return result
   }
 
-  /** Run every review role session for the candidate; returns the reports the
-   * deterministic verdict consumes. */
-  async runReviews(options: {
+  /** Run the full real Verify round: one fresh session per applicable review
+   * role and per applicable test layer, selected by the deterministic
+   * applicability resolver. Records every session and returns the reports the
+   * deterministic verdict consumes. A failed or aborted round returns an
+   * honest invalid result that stops Verify; no canned fallback. */
+  async runVerify(options: {
     incidentId: string
     runId: string
     attempt: number
-    roles: readonly ReviewRoleCode[]
     candidateHash: string
-    hypothesis: string
     revisionId: string
+    hypothesis: string
     diffText: string
     changedFiles: readonly string[]
     recoveryPointHash: string
+    required: readonly string[]
+    triggered: Readonly<Record<string, string>>
+    t5Selection: string | null
+    acceptedRemediation?: string
     checkHints?: readonly string[]
     inputRefs?: readonly string[]
-  }): Promise<ReviewReport[]> {
-    const kit = this.kit()
-    const reports: ReviewReport[] = []
-    for (const role of options.roles) {
-      const result = await runReviewRole(kit, {
-        incidentId: options.incidentId,
-        runId: options.runId,
-        attempt: options.attempt,
-        role,
-        reviewer: `real-reviewer-${role}`,
-        revision: 1,
-        candidateHash: options.candidateHash,
-        hypothesis: options.hypothesis,
-        revisionId: options.revisionId,
-        diffText: options.diffText,
-        changedFiles: options.changedFiles,
-        checkHints: options.checkHints,
-        inputRefs: options.inputRefs,
-      })
-      this.record(result.session)
-      if (result.payload === null || result.status !== "succeeded") {
-        throw new Error(`real review session ${role} ${result.status}: ${result.failureReason ?? "no payload"}`)
-      }
-      reports.push(result.payload)
+    testReceipts: Readonly<Record<string, AssignedTestReceipt>>
+  }): Promise<VerifyRoundResult> {
+    const { lease } = this.requireSurface()
+    const result = await runRealVerifyRound({
+      incidentId: options.incidentId,
+      runId: options.runId,
+      attempt: options.attempt,
+      candidateHash: options.candidateHash,
+      revisionId: options.revisionId,
+      hypothesis: options.hypothesis,
+      acceptedRemediation: options.acceptedRemediation,
+      diffText: options.diffText,
+      changedFiles: options.changedFiles,
+      recoveryPointHash: options.recoveryPointHash,
+      required: options.required,
+      triggered: options.triggered,
+      t5Selection: options.t5Selection,
+      checkHints: options.checkHints,
+      inputRefs: options.inputRefs,
+      testReceipts: options.testReceipts,
+      parentAgentId: `orchestrator-${lease.runId}`,
+      gateway: this.options.gateway,
+      lease,
+      readBroker: this.options.readBroker,
+      seal: this.sealSurface(),
+      model: this.options.model,
+      reasoning: this.options.reasoning,
+      limits: this.options.limits,
+      signal: this.options.signal,
+    })
+    for (const session of result.sessions) {
+      this.record(session)
     }
-    return reports
-  }
-
-  /** Run every test layer session; returns the reports the deterministic
-   * verdict consumes. */
-  async runTests(options: {
-    incidentId: string
-    runId: string
-    attempt: number
-    layers: readonly TestLayerCode[]
-    candidateHash: string
-    diffText: string
-    changedFiles: readonly string[]
-    runsByLayer: Record<string, { tool: string; toolVersion: string; target: string; receiptRef: string; runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[] }>
-  }): Promise<TestReport[]> {
-    const kit = this.kit()
-    const reports: TestReport[] = []
-    for (const layer of options.layers) {
-      const entry = options.runsByLayer[layer]
-      if (entry === undefined) {
-        throw new Error(`no receipt runs recorded for test layer ${layer}`)
-      }
-      const result = await runTestRole(kit, {
-        incidentId: options.incidentId,
-        runId: options.runId,
-        attempt: options.attempt,
-        layer,
-        tool: entry.tool,
-        toolVersion: entry.toolVersion,
-        target: entry.target,
-        receiptRef: entry.receiptRef,
-        runs: entry.runs,
-        candidateHash: options.candidateHash,
-        diffText: options.diffText,
-        changedFiles: options.changedFiles,
-      })
-      this.record(result.session)
-      if (result.payload === null || result.status !== "succeeded") {
-        throw new Error(`real test session ${layer} ${result.status}: ${result.failureReason ?? "no payload"}`)
-      }
-      reports.push(result.payload)
-    }
-    return reports
+    return result
   }
 
   /** Run the end-of-run Orchestrator role session. */
