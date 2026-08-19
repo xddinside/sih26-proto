@@ -35,6 +35,33 @@ import type { HashString } from "@sih/contracts/hashes"
 import type { ModelGateway, ReadBroker, LeaseRef } from "@sih/brokers"
 import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import type { RoleLimits } from "../../../packages/pi-skills/src/role/limits.js"
+import type { OrchestratorToolService } from "../../../packages/pi-skills/src/orchestrator/tools.js"
+import {
+  BRIEF_SYSTEM_PROMPT,
+  JUDGE_SYSTEM_PROMPT,
+  ORCHESTRATOR_SYSTEM_PROMPT,
+  PARTICIPANT_SYSTEM_PROMPT,
+  REPAIR_IMPLEMENTER_SYSTEM_PROMPT,
+  REPAIR_PLANNER_SYSTEM_PROMPT,
+  REVIEW_SYSTEM_PROMPT,
+  SYNTHESIZER_SYSTEM_PROMPT,
+  TEST_SYSTEM_PROMPT,
+} from "../../../packages/pi-skills/src/prompts.js"
+
+const PROMPT_REVISION = (() => {
+  const digest = contentHash({
+    brief: BRIEF_SYSTEM_PROMPT,
+    orchestrator: ORCHESTRATOR_SYSTEM_PROMPT,
+    fusionParticipant: PARTICIPANT_SYSTEM_PROMPT,
+    fusionJudge: JUDGE_SYSTEM_PROMPT,
+    fusionSynthesizer: SYNTHESIZER_SYSTEM_PROMPT,
+    repairPlanner: REPAIR_PLANNER_SYSTEM_PROMPT,
+    repairImplementer: REPAIR_IMPLEMENTER_SYSTEM_PROMPT,
+    review: REVIEW_SYSTEM_PROMPT,
+    test: TEST_SYSTEM_PROMPT,
+  })
+  return digest.ok ? digest.value : "prompts@1.0"
+})()
 
 /** One role session ran; the kit keeps these for the capture manifest. */
 export type KitSessionRecord = AgentSessionRecord
@@ -57,6 +84,8 @@ export interface RealAgentKitOptions {
   policyVersion: string
   /** The digests the manifest freezes. */
   skillTreeDigest: string
+  /** Version of the role prompt catalog used by every fresh session. */
+  promptRevision?: string
   piAgentCoreVersion: string
   piAiVersion: string
   budgets: {
@@ -68,6 +97,9 @@ export interface RealAgentKitOptions {
   schemaVersions: Record<string, string>
   scenario: string
   mode: "rehearsal" | "full-capture"
+  providerClass?: "real" | "fixture"
+  manifestProvider?: string
+  orchestrator?: OrchestratorToolService
 }
 
 /**
@@ -126,10 +158,12 @@ export class RealAgentKit {
       candidateHash: "no-candidate-hash",
       seal: this.sealSurface(),
       model: this.options.model,
+      providerClass: this.options.providerClass,
       reasoning: this.options.reasoning,
       limits: this.options.limits,
       signal: this.options.signal,
       readBroker: this.options.readBroker,
+      orchestrator: this.options.orchestrator,
     }
   }
 
@@ -171,6 +205,7 @@ export class RealAgentKit {
       candidateHash: "no-candidate-hash",
       seal: this.sealSurface(),
       model: this.options.model,
+      providerClass: this.options.providerClass,
       reasoning: this.options.reasoning,
       limits: this.options.limits,
       signal: this.options.signal,
@@ -209,6 +244,7 @@ export class RealAgentKit {
       readBroker: this.options.readBroker,
       seal: this.sealSurface(),
       model: this.options.model,
+      providerClass: this.options.providerClass,
       reasoning: this.options.reasoning,
       limits: this.options.limits,
       signal: this.options.signal,
@@ -269,6 +305,7 @@ export class RealAgentKit {
       readBroker: this.options.readBroker,
       seal: this.sealSurface(),
       model: this.options.model,
+      providerClass: this.options.providerClass,
       reasoning: this.options.reasoning,
       limits: this.options.limits,
       signal: this.options.signal,
@@ -286,6 +323,7 @@ export class RealAgentKit {
     attempt: number
     stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string }
     runContext: string
+    sessionId?: string
   }): Promise<OrchestratorReport | null> {
     const kit = this.kit()
     const result = await runOrchestratorRole(kit, options)
@@ -319,21 +357,22 @@ export class RealAgentKit {
     scenario: string
   }): Promise<CaptureManifest> {
     const payload: CaptureManifest = {
-      schema_version: "1.0",
+      schema_version: "1.1",
       manifest_id: `capture-manifest:${options.incidentId}:${options.runId}`,
       incident_id: options.incidentId,
       run_id: options.runId,
       attempt: options.attempt,
       mode: options.mode,
       scenario: options.scenario,
-      provider_class: "real",
-      provider: this.options.model.provider,
+      provider_class: this.options.providerClass ?? "real",
+      provider: this.options.manifestProvider ?? this.options.model.provider,
       model: this.options.model.id,
       reasoning: this.options.reasoning ?? "high",
       pi_agent_core_version: this.options.piAgentCoreVersion,
       pi_ai_version: this.options.piAiVersion,
       skill_tree_digest: this.options.skillTreeDigest,
       tool_catalog_revision: this.options.toolCatalogVersion,
+      prompt_revision: this.options.promptRevision ?? PROMPT_REVISION,
       policy_revision: this.options.policyVersion,
       perspectives: this.options.perspectives.map((entry) => ({
         participant_id: entry.participantId,
@@ -354,7 +393,7 @@ export class RealAgentKit {
     payload.manifest_digest = digest.value
     await this.sealSurface().seal({
       schemaId: "capture-manifest",
-      schemaVersion: "1.0",
+      schemaVersion: "1.1",
       payload,
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
     })

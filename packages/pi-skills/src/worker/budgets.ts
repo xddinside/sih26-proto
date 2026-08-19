@@ -48,6 +48,21 @@ export const DEMO_BUDGETS: Budgets = {
   workerRestartCap: 2,
 }
 
+/** Rehearsal profile: the Demo Profile's open-ended wall clock is replaced
+ * with the finite issue-#29 session/run boundary. */
+export const REHEARSAL_BUDGETS: Budgets = {
+  wallTimeMs: 120 * 60 * 1000,
+  tokenCap: null,
+  costCapUsd: null,
+  fusionRoundCap: null,
+  evidenceActionCap: null,
+  brokerActionCap: null,
+  subagentCap: null,
+  revisionCap: 2,
+  attemptLimit: 3,
+  workerRestartCap: 2,
+}
+
 export type BudgetMetric =
   | "wall-time"
   | "tokens"

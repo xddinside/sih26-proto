@@ -18,9 +18,10 @@
 import { createHmac } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { ModelGateway, ReadBroker, piAiStreamingProvider, stubProvider } from "@sih/brokers"
-import type { ControlPlaneClient, LeaseRef, ModelProvider } from "@sih/brokers"
+import type { ControlPlaneClient, GatewayStreamingProvider, LeaseRef, ModelProvider } from "@sih/brokers"
 import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import { deliveryKey, incidentKey, evidenceItemId } from "@sih/contracts/hashes"
 import type {
@@ -28,6 +29,7 @@ import type {
   EvidenceItem,
   IncidentBrief,
   JournalEvent,
+  OrchestratorWorkRequest,
   ReviewReport,
   TestReport,
 } from "@sih/contracts/types"
@@ -46,7 +48,7 @@ import type { ResolverInput } from "@sih/control-plane/src/verify/resolver.js"
 import { reviewInputFromReport, testInputFromReport } from "@sih/control-plane/src/verify/verdict.js"
 
 import { bootstrapWorker } from "../../../packages/pi-skills/src/worker/bootstrap.js"
-import { DEMO_BUDGETS } from "../../../packages/pi-skills/src/worker/budgets.js"
+import { DEMO_BUDGETS, REHEARSAL_BUDGETS } from "../../../packages/pi-skills/src/worker/budgets.js"
 import { loadSkillTree } from "../../../packages/pi-skills/src/skill-catalog.js"
 import { PiOrchestratorExtension } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import type {
@@ -92,7 +94,25 @@ import {
 } from "./payloads.js"
 import type { CaptureFacts, EvidenceIds } from "./payloads.js"
 import { RealAgentKit } from "./real-agents.js"
+import type { FrozenRehearsalEvidence } from "./frozen-evidence.js"
+import { deterministicStreamingProvider } from "./deterministic-provider.js"
 import * as shop from "./shop.js"
+
+/** Content revision of the effective Orchestrator tool catalog. Keeping this
+ * derived from the typed names and parameter fields makes manifest provenance
+ * change when the bounded model-facing boundary changes. */
+const ORCHESTRATOR_TOOL_CATALOG_REVISION = hashOf({
+  catalog: "orchestrator-tools",
+  version: "1.1",
+  tools: [
+    { name: "inspect_orchestrator_state", parameters: [] },
+    {
+      name: "request_orchestrator_work",
+      parameters: ["request_id", "work_id", "stage", "attempt", "depends_on", "budget"],
+      budget: ["model_turns", "non_terminal_tool_calls", "session_wall_clock_ms", "run_wall_clock_ms"],
+    },
+  ],
+})
 
 export interface DriverOptions {
   run: 1 | 2
@@ -118,6 +138,14 @@ export interface DriverOptions {
   /** `rehearsal` runs record no presentation manifest; `full-capture` runs
    * do. Defaults to `full-capture`. */
   mode?: "rehearsal" | "full-capture"
+  /** Immutable saved Evidence Set input for issue-#29 rehearsals. */
+  frozenEvidence?: FrozenRehearsalEvidence
+  /** Explicit bounded role/run budgets for a rehearsal manifest. */
+  budgets?: RealCaptureAgent["budgets"]
+  /** Operator cancellation signal for the bounded run. */
+  signal?: AbortSignal
+  /** Best-effort export hook for an interrupted/failed attempt. */
+  onFailure?: (input: { incidentId: string; runId: string; cp: ControlPlane }) => Promise<void>
 }
 
 /** The real-agent capture configuration (capture.ts --agents=real). */
@@ -127,6 +155,16 @@ export interface RealCaptureAgent {
   reasoning?: ThinkingLevel
   /** Participant perspectives in Fusion participant order. */
   perspectives: Array<{ participantId: string; perspective: string; order: number }>
+  /** Deterministic rehearsals inject a streaming transport; live captures use
+   * the Gateway's real provider transport. */
+  streaming?: GatewayStreamingProvider
+  providerClass?: "real" | "fixture"
+  budgets?: {
+    model_turns: number
+    non_terminal_tool_calls: number
+    session_wall_clock_ms: number
+    run_wall_clock_ms: number
+  }
 }
 
 export interface ReleaseAdapter {
@@ -169,7 +207,7 @@ export interface ReadAdapter {
   }>
 }
 
-export const SKILLS_ROOT = new URL("../../../packages/pi-skills", import.meta.url).pathname
+export const SKILLS_ROOT = fileURLToPath(new URL("../../../packages/pi-skills", import.meta.url))
 
 /** The deterministic skill-tree digest the capture manifest freezes: the
  * canonical hash of every loaded skill's name and contract version. */
@@ -183,8 +221,7 @@ export function skillTreeDigestOf(skills: Map<string, { contract: { name: string
 /** The installed published-package version (pi-agent-core / pi-ai). */
 export function installedVersion(packageName: "pi-agent-core" | "pi-ai"): string {
   const manifestPath = join(
-    process.cwd(),
-    "node_modules",
+    fileURLToPath(new URL("../../../node_modules", import.meta.url)),
     "@earendil-works",
     packageName,
     "package.json",
@@ -226,7 +263,7 @@ export function liveReadAdapters(recorded: {
       async read(request) {
         const key = request.query.includes("paymentFailure") ? "paymentFailure" : "paymentUnreachable"
         try {
-          const result = await shop.flagdValue(key)
+          const result = await shop.flagdValue(key, process.env.OTEL_DEMO_ROOT ?? "/tmp/opencode/demo-repo")
           return { outcome: "ok", data: { backend: request.backend, key, value: result.value }, row_count: 1 }
         } catch {
           return {
@@ -238,6 +275,47 @@ export function liveReadAdapters(recorded: {
             },
             row_count: 1,
           }
+        }
+      },
+    },
+  }
+}
+
+/** Frozen/recorded Read Broker adapters. Unlike the live adapters, these
+ * never call Prometheus, flagd, or the shop helpers; every rehearsal read is
+ * derived solely from the already-loaded Evidence Set facts. */
+export function recordedReadAdapters(recorded: {
+  errorRatio: number
+  callsPerSecond: number
+  flagFailure: number
+  flagUnreachable: boolean
+}): Record<string, ReadAdapter> {
+  return {
+    prometheus: {
+      async read(request) {
+        const value = request.query.includes("duration_bucket")
+          ? 0.01
+          : request.query.includes("calls")
+            ? recorded.callsPerSecond
+            : recorded.errorRatio
+        return {
+          outcome: "ok",
+          data: { backend: request.backend, query: request.query, value, labels: { service_name: "payment" } },
+          row_count: 1,
+        }
+      },
+    },
+    flagd: {
+      async read(request) {
+        const key = request.query.includes("paymentFailure") ? "paymentFailure" : "paymentUnreachable"
+        return {
+          outcome: "ok",
+          data: {
+            backend: request.backend,
+            key,
+            value: key === "paymentFailure" ? recorded.flagFailure : recorded.flagUnreachable,
+          },
+          row_count: 1,
         }
       },
     },
@@ -652,10 +730,24 @@ async function proposalRef(cp: ControlPlane, incidentId: string, runId: string):
   return proposal.artifactRef.content_hash
 }
 
-async function sleepMs(milliseconds: number): Promise<void> {
-  if (milliseconds > 0) {
-    await new Promise((resolve) => setTimeout(resolve, milliseconds))
-  }
+async function sleepMs(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (milliseconds <= 0) return
+  if (signal?.aborted === true) throw new Error("capture run cancelled")
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener("abort", cancel)
+      resolve()
+    }
+    const cancel = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener("abort", cancel)
+      reject(new Error("capture run cancelled"))
+    }
+    timer = setTimeout(finish, milliseconds)
+    signal?.addEventListener("abort", cancel, { once: true })
+  })
 }
 
 async function candidateHealthy(): Promise<boolean> {
@@ -723,6 +815,22 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
   const { run, facts, alert, offline, readAdapters, releaseAdapter, evidenceRunner, savedId } = options
   const runtime = await bootstrap(config)
   const cp = runtime.cp
+  const boundedRun = options.frozenEvidence !== undefined
+  const runWallClockMs = options.budgets?.run_wall_clock_ms ?? options.agent?.budgets?.run_wall_clock_ms ?? 120 * 60 * 1000
+  const runAbortController = new AbortController()
+  const abortFromCaller = (): void => runAbortController.abort()
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true })
+  if (options.signal?.aborted === true) runAbortController.abort()
+  const runTimer = boundedRun
+    ? setTimeout(() => runAbortController.abort(), runWallClockMs)
+    : undefined
+  runTimer?.unref?.()
+  let activeIncidentId: string | undefined
+  const assertRunBudget = (): void => {
+    if (runAbortController.signal.aborted) {
+      throw new Error(`rehearsal Incident Run wall-clock budget exhausted (${runWallClockMs}ms)`)
+    }
+  }
 
   const policyDraft: PolicyDraft =
     run === 1
@@ -743,12 +851,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
   const schedule = policyDraft.schedule
 
   try {
+    assertRunBudget()
     // 1. Ingest the normalized, HMAC-shaped firing trigger together with the
     //    operator-set policy (the Authority Mode and Automation Policy dials).
-    const built = await buildTrigger({ alert, state: "firing", signalValue: facts.firingRatio })
+    const built = options.frozenEvidence === undefined
+      ? await buildTrigger({ alert, state: "firing", signalValue: facts.firingRatio })
+      : { trigger: options.frozenEvidence.trigger, body: JSON.stringify(options.frozenEvidence.trigger) }
     const intake = await cp.handleTrigger(built.trigger as never, policyDraft)
     if (!intake.ok) throw new Error(intake.error.message)
     const incidentId = intake.value.incidentId
+    activeIncidentId = incidentId
     const runId = "run-1"
     console.log(`[capture] incident=${incidentId} delivery=${intake.value.deliveryResult} (${RULE_ALERT_NAME} ratio=${facts.firingRatio.toFixed(3)})`)
 
@@ -758,6 +870,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const policyVersion = await cp.currentPolicyVersion(incidentId)
 
     const issueLease = async (stage: string): Promise<StageLease> => {
+      assertRunBudget()
       const issued = await cp.leases.issueRunLease({
         incidentId,
         runId,
@@ -792,10 +905,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       actorKind: "orchestrator",
       toolClass: "detect",
     }
+    // The end-of-run Orchestrator is bound to the currently active stage
+    // lease. Keep the service closure mutable because the capture advances
+    // through stages before the fresh Orchestrator session is started.
+    let orchestratorLease: StageLease = detectLease
 
-    // 3. Build the evidence from the real recorded rows.
-    const ids = buildEvidence(incidentId, facts)
-    const revisionId = hashOf({ incident: incidentId, revision: 1, items: ids.items.map((item) => item.id) })
+    // 3. Build the Evidence Bundle. Rehearsals use the verified immutable
+    // saved revision verbatim; live captures construct it from collected rows.
+    const ids = options.frozenEvidence?.evidenceIds ?? buildEvidence(incidentId, facts)
+    const revisionId = options.frozenEvidence?.evidenceSet.revision_id ??
+      hashOf({ incident: incidentId, revision: 1, items: ids.items.map((item) => item.id) })
     const bundle: EvidenceBundle = {
       revisionId,
       items: ids.items,
@@ -912,8 +1031,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       snapshotDir: `/tmp/opencode/sih-capture-snapshot-${run}`,
       evidenceRevisionId: revisionId,
       skillsRoot: SKILLS_ROOT,
-      toolCatalogVersion: "tool-catalog@1.0",
-      budgets: DEMO_BUDGETS,
+      toolCatalogVersion: ORCHESTRATOR_TOOL_CATALOG_REVISION,
+      budgets: options.frozenEvidence === undefined
+        ? DEMO_BUDGETS
+        : { ...REHEARSAL_BUDGETS, wallTimeMs: options.budgets?.run_wall_clock_ms ?? REHEARSAL_BUDGETS.wallTimeMs },
       allowedModels: {
         participant: ["stub-participant-1", "stub-participant-2"],
         judge: ["stub-judge"],
@@ -930,15 +1051,80 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     if (realAgent === undefined) {
       throw new Error("--agents=real needs the agent provider/model configuration")
     }
+    const agentBudgets = options.budgets ?? realAgent?.budgets ?? {
+      model_turns: 20,
+      non_terminal_tool_calls: 32,
+      session_wall_clock_ms: 12 * 60_000,
+      run_wall_clock_ms: 120 * 60_000,
+    }
+    const deterministic = realAgent?.provider === "deterministic"
+    const gatewayProvider = deterministic
+      ? deterministicStreamingProvider({
+          incidentId,
+          runId,
+          revisionId: revisionId as HashString,
+          hypotheses,
+          evidenceIds: ids,
+          seed: facts.seed,
+          requestBudget: agentBudgets,
+        })
+      : realAgent?.streaming ?? piAiStreamingProvider
+    const gatewayProviderName = deterministic ? "opencode-go" : realAgent?.provider
     const gateway = realAgent === null
       ? new ModelGateway(cpClient, structuredProvider(incidentId, runId, revisionId, hypotheses))
-      : new ModelGateway(cpClient, stubProvider, piAiStreamingProvider, process.env.OPENCODE_API_KEY)
+      : new ModelGateway(
+          cpClient,
+          stubProvider,
+          gatewayProvider,
+          deterministic || realAgent.streaming !== undefined ? undefined : process.env.OPENCODE_API_KEY,
+        )
+    const orchestratorService = realAgent === null
+      ? undefined
+      : {
+          async inspectState() {
+            const result = await cp.inspectOrchestratorState(incidentId, orchestratorLease.token, {
+              leaseId: orchestratorLease.leaseId,
+              incidentId,
+              runId,
+              attempt: 1,
+              stage: orchestratorLease.stage,
+              actorId: orchestratorLease.actorId,
+              actorKind: orchestratorLease.actorKind,
+              toolClass: orchestratorLease.toolClass,
+            })
+            if (!result.ok) throw new Error(result.error.message)
+            return result.value
+          },
+          async requestWork(request: OrchestratorWorkRequest) {
+            const result = await cp.requestOrchestratorWork(incidentId, orchestratorLease.token, {
+              leaseId: orchestratorLease.leaseId,
+              incidentId,
+              runId,
+              attempt: 1,
+              stage: orchestratorLease.stage,
+              actorId: orchestratorLease.actorId,
+              actorKind: orchestratorLease.actorKind,
+              toolClass: orchestratorLease.toolClass,
+            }, request)
+            if (result.ok) return result.value
+            return {
+              status: "rejected" as const,
+              request_id: request.request_id,
+              work_id: request.work_id,
+              code: result.error.code,
+              reason: result.error.message,
+            }
+          },
+          async revokeDependentWork() {
+            await cp.revokeOrchestratorWork(incidentId, runId)
+          },
+        }
     const skills = await loadSkillTree(SKILLS_ROOT)
     const kit = realAgent === null
       ? null
       : new RealAgentKit({
           gateway,
-          model: { provider: realAgent.provider, id: realAgent.model },
+          model: { provider: gatewayProviderName ?? realAgent.provider, id: realAgent.model },
           reasoning: realAgent.reasoning,
           readBroker,
           incidentId,
@@ -946,39 +1132,59 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           attempt: 1,
           perspectives: realAgent.perspectives,
           seeds: [{ id: facts.seed, digest: facts.seedDiffHash }],
-          toolCatalogVersion: "tool-catalog@1.0",
+          toolCatalogVersion: ORCHESTRATOR_TOOL_CATALOG_REVISION,
           policyVersion,
-          skillTreeDigest: skillTreeDigestOf(skills),
+          skillTreeDigest: worker.skillsDigest,
           piAgentCoreVersion: installedVersion("pi-agent-core"),
           piAiVersion: installedVersion("pi-ai"),
-          budgets: {
-            model_turns: 20,
-            non_terminal_tool_calls: 32,
-            session_wall_clock_ms: 12 * 60_000,
-            run_wall_clock_ms: 2 * 3600_000,
+          budgets: agentBudgets,
+          limits: {
+            maxModelTurns: agentBudgets.model_turns,
+            maxNonTerminalToolCalls: agentBudgets.non_terminal_tool_calls,
+            maxDurationMs: agentBudgets.session_wall_clock_ms,
           },
+          signal: boundedRun || options.signal !== undefined ? runAbortController.signal : undefined,
           schemaVersions: {
             "remediation-draft": "1.0",
             "implemented-diff": "1.0",
             "review-report": "1.0",
             "test-report": "1.0",
             "orchestrator-report": "1.0",
-            "capture-manifest": "1.0",
+            "capture-manifest": "1.1",
             "fusion-participant-output": "1.0",
             "fusion-judge-output": "1.0",
             "fusion-synthesizer-output": "1.0",
             "fusion-run-artifact": "1.0",
             "agent-run-artifact": "1.0",
+            "journal-event": "1.1",
+            "orchestrator-work-request": "1.0",
+            "orchestrator-work-result": "1.0",
+            "orchestrator-lifecycle": "1.0",
           },
           scenario: `payment charge failure (${facts.seed})`,
           mode: options.mode ?? "full-capture",
+          providerClass: realAgent.providerClass,
+          manifestProvider: realAgent.provider,
+          orchestrator: orchestratorService,
         })
 
     // 6. Detect: bounded real Read Broker verification reads, then the Brief.
+    const detectProposals = inProcessProposals(cp, detectLease)
+    kit?.bindStage(detectProposals, detectLease)
+    if (kit !== null) {
+      await kit.runOrchestrator({
+        incidentId,
+        runId,
+        attempt: 1,
+        sessionId: "scheduler",
+        stageOutcomes: { detect: "pending", diagnose: "pending", repair: "pending", verify: "pending" },
+        runContext: "The bounded Orchestrator scheduler is inspecting Detect and requesting its eligible work before dependent stages are dispatched.",
+      })
+    }
     const detectOrchestrator = new PiOrchestratorExtension(
       {
         runtime: worker,
-        proposals: inProcessProposals(cp, detectLease),
+        proposals: detectProposals,
         gateway,
         lease: detectLease,
         evidence: bundle,
@@ -1001,20 +1207,29 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       knownLimits:
         "reduced Compose profile; the charge driver stands in for storefront traffic",
     }
-    const incidentBrief: IncidentBrief = {
-      schema_version: "1.0",
-      incident_id: incidentId,
-      run_id: runId,
-      attempt: 1,
-      severity: incidentFacts.severity,
-      scope: incidentFacts.scope,
-      symptom: incidentFacts.symptom,
-      initial_evidence_item_ids: [ids.metricId],
-      service_topology: incidentFacts.serviceTopology,
-      known_limits: incidentFacts.knownLimits,
-      policy_version: policyVersion,
-      sealed_at: new Date().toISOString(),
-    }
+    const incidentBrief: IncidentBrief = options.frozenEvidence === undefined
+      ? {
+          schema_version: "1.0",
+          incident_id: incidentId,
+          run_id: runId,
+          attempt: 1,
+          severity: incidentFacts.severity,
+          scope: incidentFacts.scope,
+          symptom: incidentFacts.symptom,
+          initial_evidence_item_ids: [ids.metricId],
+          service_topology: incidentFacts.serviceTopology,
+          known_limits: incidentFacts.knownLimits,
+          policy_version: policyVersion,
+          sealed_at: new Date().toISOString(),
+        }
+      : {
+          ...options.frozenEvidence.incidentBrief,
+          incident_id: incidentId,
+          run_id: runId,
+          attempt: 1,
+          policy_version: policyVersion,
+          sealed_at: new Date().toISOString(),
+        }
     const detect = await detectOrchestrator.driveDetect({
       ...incidentFacts,
       policyVersion,
@@ -1024,6 +1239,40 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       ],
     })
     console.log(`[capture] detect sealed incident-brief ${detect.detail}`)
+    if (kit !== null) {
+      const briefRef = cp.sealedArtifacts(incidentId, runId).find(
+        (artifact) => artifact.artifactRef.schema_id === "incident-brief",
+      )?.artifactRef
+      if (briefRef !== undefined) {
+        const schedulerState = await cp.inspectOrchestratorState(incidentId, detectLease.token, {
+          leaseId: detectLease.leaseId,
+          incidentId,
+          runId,
+          attempt: 1,
+          stage: detectLease.stage,
+          actorId: detectLease.actorId,
+          actorKind: detectLease.actorKind,
+          toolClass: detectLease.toolClass,
+        })
+        if (schedulerState.ok) {
+          for (const workId of schedulerState.value.admitted_work_ids) {
+            const completed = await cp.completeOrchestratorWork(incidentId, detectLease.token, {
+              leaseId: detectLease.leaseId,
+              incidentId,
+              runId,
+              attempt: 1,
+              stage: detectLease.stage,
+              actorId: detectLease.actorId,
+              actorKind: detectLease.actorKind,
+              toolClass: detectLease.toolClass,
+            }, workId, [briefRef])
+            if (!completed.ok) {
+              throw new Error(`scheduler work ${workId} could not be completed: ${completed.error.message}`)
+            }
+          }
+        }
+      }
+    }
 
     // 7. Diagnose: one Fusion round with two deterministic stub participants,
     //    the real deterministic Hypothesis gate, and sealed fusion artifacts.
@@ -1045,7 +1294,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await diagnoseProposals.sealArtifact({
       schemaId: "evidence-set",
       schemaVersion: "1.0",
-      payload: {
+      payload: options.frozenEvidence?.evidenceSet ?? {
         schema_version: "1.0",
         revision_id: revisionId,
         revision_number: 1,
@@ -1833,6 +2082,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const watchProposals = inProcessProposals(cp, watchLease)
     await watchProposals.stageCommand({ kind: "enter-stage", stage: "watch" })
     await watchProposals.stageCommand({ kind: "stage-status", stage: "watch", to: "in-progress" })
+    orchestratorLease = watchLease
     const watchEnv: ReceiptEnv = { incidentId, runId, leaseId: watchLease.leaseId, stage: "watch", candidateHash }
 
     const stage1Samples: Record<string, unknown>[] = []
@@ -1855,7 +2105,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         if (Date.now() > spansDeadline) {
           throw new Error("the candidate cohort never produced span metrics")
         }
-        await sleepMs(10_000)
+        await sleepMs(10_000, runAbortController.signal)
       }
     }
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
@@ -1865,7 +2115,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       let probeOutcome = await evidenceRunner.probeCandidate(PROBES_PER_WINDOW)
       const probeDeadline = Date.now() + 90_000
       while (probeOutcome.err !== 0 && Date.now() < probeDeadline) {
-        await sleepMs(5_000)
+        await sleepMs(5_000, runAbortController.signal)
         probeOutcome = await evidenceRunner.probeCandidate(PROBES_PER_WINDOW)
       }
       await cp.recordBrokerReceipt(incidentId, runId, "watch", readReceipt(watchEnv, {
@@ -1876,11 +2126,11 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         resourceType: "probe-run",
         result: { outcome: probeOutcome.err === 0 ? "ok" : "error", data: probeOutcome, rowCount: probeOutcome.total },
       }), "read-broker")
-      await sleepMs(30_000)
+      await sleepMs(30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const rehearsal = await evidenceRunner.rehearseWatch()
-      const g1 = await candidateHealthy()
+      const g1 = offline ? true : await candidateHealthy()
       const g2ok = (rehearsal.calls ?? 0) >= 20 && (rehearsal.g2 ?? 1) < WATCH_GATES.G2.limit
       stage1Samples.push(
         watchSample({
@@ -1984,14 +2234,14 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         if (Date.now() > drainDeadline) {
           throw new Error("the live error ratio never dropped below the Watch limit after the swap")
         }
-        await sleepMs(10_000)
+        await sleepMs(10_000, runAbortController.signal)
       }
     }
 
     const stage2Samples: Record<string, unknown>[] = []
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
       const windowStart = new Date()
-      await sleepMs(30_000)
+      await sleepMs(30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -2059,14 +2309,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       }
       resolvedRatio = (await shop.liveErrorRatio()) ?? facts.baselineRatio
     }
-    const resolvedBuilt = await buildTrigger({ alert: resolvedAlert, state: "resolved", signalValue: resolvedRatio })
+    const resolvedBuilt = options.frozenEvidence?.resolvedTrigger === null || options.frozenEvidence?.resolvedTrigger === undefined
+      ? await buildTrigger({ alert: resolvedAlert, state: "resolved", signalValue: resolvedRatio })
+      : { trigger: options.frozenEvidence.resolvedTrigger, body: JSON.stringify(options.frozenEvidence.resolvedTrigger) }
     const resolvedIntake = await cp.handleTrigger(resolvedBuilt.trigger as never)
     if (!resolvedIntake.ok) throw new Error(resolvedIntake.error.message)
     console.log(`[capture] resolved trigger: ${resolvedIntake.value.deliveryResult} (ratio=${resolvedRatio.toFixed(3)})`)
 
     // Confirmation window: G1-G6 pass once more with no recurrence.
     const confirmationStart = new Date()
-    await sleepMs(30_000)
+    await sleepMs(30_000, runAbortController.signal)
     const confirmationEnd = new Date()
     const timeRange = { starts_at: confirmationStart.toISOString(), ends_at: confirmationEnd.toISOString() }
     const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -2109,6 +2361,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       to: "completed",
       artifact_ref: confirmationSealed.artifact_ref,
     })
+    assertRunBudget()
     if (kit !== null) {
       kit.bindStage(watchProposals, watchLease)
       await sealRunEnd(kit, {
@@ -2156,9 +2409,20 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
       ).length,
     }
+    if (runTimer !== undefined) clearTimeout(runTimer)
+    options.signal?.removeEventListener("abort", abortFromCaller)
     await runtime.store.close()
     return report
   } catch (error) {
+    if (activeIncidentId !== undefined) {
+      await cp.revokeOrchestratorWork(activeIncidentId, "run-1").catch(() => undefined)
+    }
+    if (activeIncidentId !== undefined) {
+      const failureExport = options.onFailure?.({ incidentId: activeIncidentId, runId: "run-1", cp })
+      await failureExport?.catch(() => undefined)
+    }
+    if (runTimer !== undefined) clearTimeout(runTimer)
+    options.signal?.removeEventListener("abort", abortFromCaller)
     await runtime.store.close()
     throw error
   }
@@ -2185,9 +2449,9 @@ function runEndContext(
   ].join("\n")
 }
 
-/** Run the end-of-run Orchestrator role session and, for full captures, seal
- * the capture manifest, then leave the run to complete or fail. Rehearsal
- * runs record no presentation manifest. */
+/** Run the end-of-run Orchestrator role session and seal the capture manifest
+ * for both full captures and rehearsals. Rehearsal manifests are retained in
+ * the append-only development store but are never eligible for presentation. */
 async function sealRunEnd(
   kit: RealAgentKit,
   options: {
@@ -2202,19 +2466,15 @@ async function sealRunEnd(
     incidentId: options.incidentId,
     runId: options.runId,
     attempt: 1,
+    sessionId: "final-report",
     stageOutcomes: options.stageOutcomes,
     runContext: options.runContext,
   })
-  // Rehearsal runs keep the orchestrator session but record no presentation
-  // manifest; full-capture runs seal the capture manifest artifact.
-  if (options.mode === "rehearsal") {
-    return
-  }
   await kit.sealManifest({
     incidentId: options.incidentId,
     runId: options.runId,
     attempt: 1,
-    mode: "full-capture",
+    mode: options.mode,
     scenario: options.runContext.split("\n")[0] ?? "payment charge failure",
   })
 }

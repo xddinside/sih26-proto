@@ -2,7 +2,8 @@
  * The explicit, versioned schema registry.
  *
  * Every wire schema this package ships is registered here by name and version.
- * The current version is `1.0`. A name absent from the registry is
+ * Most artifact schemas are at `1.0`; the Orchestrator-aware journal and
+ * capture manifest are at `1.1` with their `1.0` readers retained. A name absent from the registry is
  * `UNKNOWN_SCHEMA`; a known name with an unsupported version is
  * `STALE_SCHEMA`. This registry is deliberately explicit: adding a schema is
  * a code change, not a runtime extension.
@@ -11,6 +12,7 @@ import type { JsonValue } from "../result.js";
 
 import {
   captureManifestSchema,
+  captureManifestSchemaV1,
   implementedDiffSchema,
   orchestratorReportSchema,
   remediationDraftSchema,
@@ -35,7 +37,7 @@ import {
 import { hypothesisSchema } from "./hypothesis.js";
 import { incidentRunSchema, incidentSchema, stageRecordSchema } from "./incident.js";
 import { incidentTriggerSchema } from "./incident-trigger.js";
-import { journalEventSchema } from "./journal-event.js";
+import { journalEventSchema, journalEventSchemaV1 } from "./journal-event.js";
 import {
   diagnosisReportSchema,
   incidentBriefSchema,
@@ -49,6 +51,17 @@ import {
 import { directActionRecordSchema, recoveryPointSchema, releaseRecordSchema } from "./release-records.js";
 import { savedBundleManifestSchema } from "./saved-bundle-manifest.js";
 import { rolloutWatchPlanSchema } from "./rollout-watch-plan.js";
+import {
+  orchestratorLifecycleStateSchema,
+  orchestratorWorkRequestSchema,
+  orchestratorWorkResultSchema,
+} from "../orchestrator.js";
+
+export {
+  orchestratorLifecycleStateSchema,
+  orchestratorWorkRequestSchema,
+  orchestratorWorkResultSchema,
+} from "../orchestrator.js";
 
 /**
  * A JSON Schema Draft 2020-12 document. Root schemas carry an `$id`; embedded
@@ -70,7 +83,7 @@ export const SCHEMA_REGISTRY = {
   incident: versionMap(incidentSchema),
   "incident-run": versionMap(incidentRunSchema),
   "stage-record": versionMap(stageRecordSchema),
-  "journal-event": versionMap(journalEventSchema),
+  "journal-event": { "1.0": journalEventSchemaV1, "1.1": journalEventSchema },
   "artifact-envelope": versionMap(artifactEnvelopeSchema),
   "saved-bundle-manifest": versionMap(savedBundleManifestSchema),
   "broker-receipt": versionMap(brokerReceiptSchema),
@@ -98,15 +111,18 @@ export const SCHEMA_REGISTRY = {
   "remediation-draft": versionMap(remediationDraftSchema),
   "implemented-diff": versionMap(implementedDiffSchema),
   "orchestrator-report": versionMap(orchestratorReportSchema),
-  "capture-manifest": versionMap(captureManifestSchema),
+  "capture-manifest": { "1.0": captureManifestSchemaV1, "1.1": captureManifestSchema },
   "agent-run-artifact": versionMap(agentRunArtifactSchema),
+  "orchestrator-work-request": versionMap(orchestratorWorkRequestSchema),
+  "orchestrator-lifecycle": versionMap(orchestratorLifecycleStateSchema),
+  "orchestrator-work-result": versionMap(orchestratorWorkResultSchema),
 } as const;
 
 /** The names of every registered schema. */
 export type SchemaName = keyof typeof SCHEMA_REGISTRY;
 
 /** The supported schema version string. */
-export type SchemaVersion = "1.0";
+export type SchemaVersion = "1.0" | "1.1";
 
 /** Outcome of classifying a schema name/version pair. */
 export type SchemaClassification =
@@ -142,8 +158,8 @@ export function classifySchema(
 
 /** The `$id` used to register a schema with Ajv. */
 export function schemaId(name: SchemaName, version: SchemaVersion): string {
-  const schema = SCHEMA_REGISTRY[name][version];
-  return schema.$id ?? `${name}@${version}`;
+  const schema = (SCHEMA_REGISTRY[name] as Record<string, JsonSchema>)[version];
+  return schema?.$id ?? `${name}@${version}`;
 }
 
 /** A stable, synthetic registration key for a schema name/version pair. */

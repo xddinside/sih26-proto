@@ -124,7 +124,10 @@ export interface ScriptedStreamingOptions {
   /** The turn sequence per session (keyed by the request's agentId). When
    * the script runs out of turns, the last turn repeats so budget limits can
    * be exercised deterministically. */
-  turns: Record<string, readonly ScriptedTurn[]>
+  turns?: Record<string, readonly ScriptedTurn[]>
+  /** Optional dynamic script used by deterministic rehearsals that need to
+   * inspect a broker/test-tool result before submitting a typed payload. */
+  respond?: (request: GatewayStreamRequest, turnIndex: number) => ScriptedTurn | Promise<ScriptedTurn>
   usage?: { input?: number; output?: number }
   /** When true, an aborted signal turns the next stream call into an
    * aborted final message instead of the scripted turn. */
@@ -155,16 +158,19 @@ export function scriptedStreamingProvider(
   options: ScriptedStreamingOptions,
 ): GatewayStreamingProvider {
   const callCounts = new Map<string, number>()
-  return (request, { model }) => {
+  return async (request, { model }) => {
     if (options.honorSignal === true && request.options?.signal?.aborted === true) {
       return errorStream(model, "session aborted", "aborted")
     }
-    return turnStream(nextTurn(), model, options.usage ?? {})
+    return turnStream(await nextTurn(), model, options.usage ?? {})
 
-    function nextTurn(): ScriptedTurn {
-      const script = options.turns[request.agentId]
+    async function nextTurn(): Promise<ScriptedTurn> {
       const count = callCounts.get(request.agentId) ?? 0
       callCounts.set(request.agentId, count + 1)
+      if (options.respond !== undefined) {
+        return options.respond(request, count)
+      }
+      const script = options.turns?.[request.agentId]
       if (script === undefined || script.length === 0) {
         return { kind: "text", text: "no script for this session" }
       }

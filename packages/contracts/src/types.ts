@@ -59,6 +59,20 @@ export type { SavedBundleManifest } from "./schemas/saved-bundle-manifest.js";
 export type { RolloutWatchPlan } from "./schemas/rollout-watch-plan.js";
 export type { DirectActionRecord, RecoveryPoint, ReleaseRecord } from "./schemas/release-records.js";
 export type {
+  OrchestratorArtifactRef,
+  OrchestratorBudgetState,
+  OrchestratorLifecycleState,
+  OrchestratorStage,
+  OrchestratorStageState,
+  OrchestratorStageStatus,
+  OrchestratorWorkAdmission,
+  OrchestratorWorkBudget,
+  OrchestratorWorkRequest,
+  OrchestratorWorkRejection,
+  OrchestratorWorkResult,
+} from "./orchestrator.js";
+export { ORCHESTRATOR_STAGES } from "./orchestrator.js";
+export type {
   SchemaClassification,
   SchemaName,
   SchemaPayload,

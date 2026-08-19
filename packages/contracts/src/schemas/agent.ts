@@ -7,7 +7,7 @@
  */
 import type { FromSchema } from "json-schema-to-ts";
 
-import { HASH_STRING, SCHEMA_VERSION_1, TIMESTAMP } from "./defs.js";
+import { HASH_STRING, SCHEMA_VERSION_1, SCHEMA_VERSION_1_1, TIMESTAMP } from "./defs.js";
 
 const NON_EMPTY_STRING = { type: "string", minLength: 1 } as const;
 const ROLE_NAME = { enum: [
@@ -201,9 +201,9 @@ const ROLE_RECORD = {
 
 /** The JSON Schema for the capture manifest sealed at the end of a run. */
 export const captureManifestSchema = {
-  $id: "https://contracts.sih.dev/capture-manifest/1.0",
+  $id: "https://contracts.sih.dev/capture-manifest/1.1",
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "Capture Manifest v1",
+  title: "Capture Manifest v1.1",
   type: "object",
   additionalProperties: false,
   required: [
@@ -222,6 +222,7 @@ export const captureManifestSchema = {
     "pi_ai_version",
     "skill_tree_digest",
     "tool_catalog_revision",
+    "prompt_revision",
     "policy_revision",
     "perspectives",
     "seeds",
@@ -232,7 +233,7 @@ export const captureManifestSchema = {
     "sealed_at",
   ],
   properties: {
-    schema_version: SCHEMA_VERSION_1,
+    schema_version: SCHEMA_VERSION_1_1,
     manifest_id: NON_EMPTY_STRING,
     incident_id: NON_EMPTY_STRING,
     run_id: NON_EMPTY_STRING,
@@ -247,6 +248,8 @@ export const captureManifestSchema = {
     pi_ai_version: NON_EMPTY_STRING,
     skill_tree_digest: HASH_STRING,
     tool_catalog_revision: NON_EMPTY_STRING,
+    /** Version of the role prompt catalog used for this capture. */
+    prompt_revision: NON_EMPTY_STRING,
     policy_revision: NON_EMPTY_STRING,
     perspectives: {
       type: "array",
@@ -295,6 +298,18 @@ export const captureManifestSchema = {
     },
     manifest_digest: HASH_STRING,
     sealed_at: TIMESTAMP,
+  },
+} as const;
+
+/** The v1.0 capture manifest remains readable for older retained attempts. */
+export const captureManifestSchemaV1 = {
+  ...captureManifestSchema,
+  $id: "https://contracts.sih.dev/capture-manifest/1.0",
+  title: "Capture Manifest v1",
+  required: captureManifestSchema.required.filter((name) => name !== "prompt_revision"),
+  properties: {
+    ...captureManifestSchema.properties,
+    schema_version: SCHEMA_VERSION_1,
   },
 } as const;
 

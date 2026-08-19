@@ -67,6 +67,24 @@ bun run capture.ts run --run 1 --offline
 bun run capture.ts run --run 2 --offline
 ```
 
+### Frozen-evidence rehearsal (issue #29)
+
+Rehearsals load exactly one verified revision-1 Evidence Set from
+`demo/saved-runs`, use the network-free streaming provider by default, and
+retain the attempt in the append-only development store. They never accept an
+API key on the command line; the live provider reads `OPENCODE_API_KEY` from
+the environment through the Gateway.
+
+```sh
+bun run capture.ts rehearse --scenario 1
+bun run capture.ts rehearse --scenario 2 --provider opencode-go --model <model-id> --reasoning high
+```
+
+Use `--model-turns`, `--non-terminal-tool-calls`, `--session-wall-clock-ms`,
+and `--run-wall-clock-ms` to lower the bounded rehearsal budgets. Rehearsal
+output cannot be promoted by `finalize`; only completed real full-capture
+runs are presentation-eligible.
+
 ### Live mode (reduced Compose profile, real firing numbers)
 
 Starts the reduced profile (`flagd`, `otel-collector`, `prometheus`,

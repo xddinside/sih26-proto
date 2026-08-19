@@ -127,6 +127,7 @@ export type {
 export {
   PRODUCTION_BUDGETS,
   DEMO_BUDGETS,
+  REHEARSAL_BUDGETS,
   BudgetTracker,
 } from "./worker/budgets.js"
 export type { Budgets, BudgetMetric, BudgetResult } from "./worker/budgets.js"
@@ -234,6 +235,13 @@ export type {
 } from "./orchestrator/orchestrator.js"
 export { HttpControlPlaneProposals } from "./orchestrator/http-proposals.js"
 export type { HttpProposalsOptions } from "./orchestrator/http-proposals.js"
+export {
+  ORCHESTRATOR_INSPECT_TOOL,
+  ORCHESTRATOR_REQUEST_TOOL,
+  createOrchestratorTools,
+  isOrchestratorWorkRequest,
+} from "./orchestrator/tools.js"
+export type { OrchestratorToolService } from "./orchestrator/tools.js"
 
 export { runRealFusionRound } from "./fusion/fusion-real.js"
 export type {

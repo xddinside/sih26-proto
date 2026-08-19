@@ -53,6 +53,8 @@ describe("runReachedTerminalState", () => {
     expect(runReachedTerminalState(record({ run: 1, outcome: null }))).toBe(false)
     expect(runReachedTerminalState(record({ run: 1, manifestSealed: false }))).toBe(false)
     expect(runReachedTerminalState(record({ run: 2, finalRunState: "completed" }))).toBe(false)
+    expect(runReachedTerminalState(record({ run: 1, status: "partial" }))).toBe(false)
+    expect(runReachedTerminalState(record({ run: 2, status: "failed" }))).toBe(false)
   })
 })
 

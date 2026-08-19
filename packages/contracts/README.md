@@ -58,7 +58,7 @@ here or a canonical report link.
 | Interface (section 9) | Contract | Status |
 |---|---|---|
 | Incident Trigger | `incident-trigger@1.0` | Implemented |
-| Journal events | `journal-event@1.0` (12-kind discriminated union) | Implemented |
+| Journal events | `journal-event@1.1` (14-kind discriminated union; 1.0 replay retained) | Implemented |
 | Sealed artifact envelope | `artifact-envelope@1.0` | Implemented |
 | Read APIs (demo scope) | live read endpoints — deferred | [incident-workspace](../../docs/research/incident-workspace.md) |
 | Event stream and commands | deferred live scope | [incident-workspace](../../docs/research/incident-workspace.md) |

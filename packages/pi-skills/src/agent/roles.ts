@@ -39,6 +39,8 @@ import { createTerminalTool } from "../role/terminal-tools.js"
 import type { FusionSealSurface } from "../fusion/fusion-real.js"
 import type { ReviewRoleCode } from "../reviews/review-runner.js"
 import type { AssignedTestReceipt, TestLayerCode } from "../tests/test-runner.js"
+import { createOrchestratorTools } from "../orchestrator/tools.js"
+import type { OrchestratorToolService } from "../orchestrator/tools.js"
 
 /** Everything a real role session needs to run. */
 export interface AgentSessionKit {
@@ -47,12 +49,16 @@ export interface AgentSessionKit {
   candidateHash: string
   seal: FusionSealSurface
   model: { provider: string; id: string }
+  /** Whether this session uses a live provider or a deterministic rehearsal. */
+  providerClass?: "real" | "fixture"
   reasoning?: ThinkingLevel
   limits?: Partial<RoleLimits>
   signal?: AbortSignal
   readBroker?: ReadBroker
   /** The implementer's private copy-on-write worktree. */
   worktree?: WorktreeHost
+  /** The Orchestrator's read/proposal-only Control Plane service. */
+  orchestrator?: OrchestratorToolService
 }
 
 /** Identity and outcome of one real role session, for the capture manifest. */
@@ -160,6 +166,7 @@ async function runRoleSession<T>(
     lease: options.kit.lease,
     gateway: options.kit.gateway,
     candidateHash: options.kit.candidateHash,
+    providerClass: options.kit.providerClass,
     tools: registeredTools,
     terminalTool: terminal,
     authority: {
@@ -558,37 +565,56 @@ export interface OrchestratorRoleOptions {
     verify: string
   }
   runContext: string
+  /** Distinguishes scheduler and final-report sessions in one run. */
+  sessionId?: string
 }
 
 /** Run the end-of-run Orchestrator role; the sealed payload is the
  * Orchestrator Report v1. */
-export function runOrchestratorRole(
+export async function runOrchestratorRole(
   kit: AgentSessionKit,
   options: OrchestratorRoleOptions,
 ): Promise<AgentRoleResult<OrchestratorReport>> {
-  return runRoleSession<OrchestratorReport>({
-    kit,
-    agentId: `orchestrator-${kit.lease.runId}`,
-    roleLabel: "orchestrator",
-    systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-    promptText: [
-      "# Run Summary",
-      options.runContext,
-      "",
-      "## Deterministic stage outcomes",
-      `- detect: ${options.stageOutcomes.detect}`,
-      `- diagnose: ${options.stageOutcomes.diagnose}`,
-      `- repair: ${options.stageOutcomes.repair}`,
-      `- verify: ${options.stageOutcomes.verify}`,
-      "",
-      "Return your final report as the Orchestrator Report v1 JSON object.",
-    ].join("\n"),
-    terminalName: "submit_orchestrator_report",
-    schemaName: "orchestrator-report",
-    schemaVersion: "1.0",
-    skill: "sih-orchestrator",
-    roleName: "orchestrator",
-  })
+  const orchestratorTools = kit.orchestrator === undefined
+    ? undefined
+    : createOrchestratorTools(kit.orchestrator)
+  const revokeDependentWork = (): void => {
+    const revocation = kit.orchestrator?.revokeDependentWork?.()
+    void revocation?.catch(() => undefined)
+  }
+  if (kit.signal !== undefined && kit.orchestrator?.revokeDependentWork !== undefined) {
+    kit.signal.addEventListener("abort", revokeDependentWork, { once: true })
+  }
+  try {
+    return await runRoleSession<OrchestratorReport>({
+      kit,
+      agentId: options.sessionId === undefined
+        ? `orchestrator-${kit.lease.runId}`
+        : `orchestrator-${options.sessionId}-${kit.lease.runId}`,
+      roleLabel: "orchestrator",
+      systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+      promptText: [
+        "# Run Summary",
+        options.runContext,
+        "",
+        "## Deterministic stage outcomes",
+        `- detect: ${options.stageOutcomes.detect}`,
+        `- diagnose: ${options.stageOutcomes.diagnose}`,
+        `- repair: ${options.stageOutcomes.repair}`,
+        `- verify: ${options.stageOutcomes.verify}`,
+        "",
+        "Return your final report as the Orchestrator Report v1 JSON object.",
+      ].join("\n"),
+      terminalName: "submit_orchestrator_report",
+      schemaName: "orchestrator-report",
+      schemaVersion: "1.0",
+      skill: "sih-orchestrator",
+      roleName: "orchestrator",
+      extraTools: orchestratorTools,
+    })
+  } finally {
+    kit.signal?.removeEventListener("abort", revokeDependentWork)
+  }
 }
 
 /** Deterministic unified diff between two file states, for the worktree

@@ -94,7 +94,7 @@ export function buildEvidence(incidentId: string, facts: CaptureFacts): Evidence
     deployment_environment_name: "demo",
   }
   const metricId = evidenceItemId({
-    schema_version: "1.0",
+    schema_version: "1.0" as const,
     kind: "metric",
     identity: metricIdentity,
     content: metricSnapshot,
@@ -464,7 +464,7 @@ export function buildHypotheses(
   facts: CaptureFacts,
 ): { h1: Hypothesis; h2: Hypothesis; h3: Hypothesis; h4: Hypothesis } {
   const base = {
-    schema_version: "1.0",
+    schema_version: "1.0" as const,
     incident_id: incidentId,
     incident_run_id: runId,
     attempt: 1,

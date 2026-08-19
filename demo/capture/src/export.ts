@@ -17,6 +17,7 @@
  */
 import { mkdir, rm, writeFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { contentHash, sha256Bytes } from "@sih/contracts/hashes"
 import { parseJsonTextStrict } from "@sih/contracts/canonical"
@@ -29,7 +30,7 @@ import { SAVED_RUNS_ROOT } from "./constants.js"
 const MANIFEST_PATH = "manifest.json"
 
 /** The repo root, derived from this module's location. */
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url))
 
 export interface ExportSource {
   /** The Control Plane incident id as captured. */
@@ -111,6 +112,18 @@ function remapJournalEvent(
       ...next.artifact_ref,
       content_hash: hashRemap.get(next.artifact_ref.content_hash) ?? next.artifact_ref.content_hash,
     }
+  }
+  if (next.type === "work_requested") {
+    next.admitted_artifact_refs = next.admitted_artifact_refs.map((artifact) => ({
+      ...artifact,
+      content_hash: hashRemap.get(artifact.content_hash) ?? artifact.content_hash,
+    }))
+  }
+  if (next.type === "work_completed") {
+    next.artifact_refs = next.artifact_refs.map((artifact) => ({
+      ...artifact,
+      content_hash: hashRemap.get(artifact.content_hash) ?? artifact.content_hash,
+    }))
   }
   if (next.type === "gate_evaluated" && next.evaluation.facts !== undefined) {
     for (const fact of next.evaluation.facts) {

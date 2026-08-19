@@ -184,6 +184,7 @@ function manifestPayload(overrides: Partial<Record<string, unknown>> = {}): Reco
     pi_ai_version: "0.79.4",
     skill_tree_digest: `sha256:${"2".repeat(64)}`,
     tool_catalog_revision: "tool-catalog-1",
+    prompt_revision: "prompts@1.0",
     policy_revision: "policy-v1",
     perspectives: [
       { participant_id: "p-1", perspective: "code-level", order: 1 },

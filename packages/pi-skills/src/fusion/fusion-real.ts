@@ -64,6 +64,7 @@ export interface RealFusionRoundOptions {
   seal: FusionSealSurface
   /** The provider/model pair every session in the round uses. */
   model: { provider: string; id: string }
+  providerClass?: "real" | "fixture"
   reasoning?: ThinkingLevel
   limits?: Partial<RoleLimits>
   signal?: AbortSignal
@@ -461,6 +462,7 @@ async function runRoleSession(options: {
     phase: options.roleLabel as RoleSessionPhase,
     systemPrompt: options.systemPrompt,
     model: options.options.model,
+    providerClass: options.options.providerClass,
     reasoning: options.options.reasoning,
     lease: options.options.lease,
     gateway: options.options.gateway,

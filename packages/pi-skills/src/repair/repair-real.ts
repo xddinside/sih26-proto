@@ -78,6 +78,7 @@ export interface RealRepairRoundOptions {
   seal: RepairSealSurface
   /** The provider/model pair every session in the round uses. */
   model: { provider: string; id: string }
+  providerClass?: "real" | "fixture"
   reasoning?: ThinkingLevel
   limits?: Partial<RoleLimits>
   signal?: AbortSignal
@@ -122,6 +123,7 @@ export async function runRealRepairRound(
     candidateHash: "no-candidate-hash",
     seal: options.seal,
     model: options.model,
+    providerClass: options.providerClass,
     reasoning: options.reasoning,
     limits: options.limits,
     signal: options.signal,

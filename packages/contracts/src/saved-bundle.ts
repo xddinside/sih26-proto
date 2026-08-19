@@ -600,7 +600,7 @@ export function verifySavedBundle(
     if (artifact.artifact_schema_id !== "capture-manifest") {
       continue;
     }
-    // SAFETY: validate() parsed this payload against capture-manifest@1.0 above.
+    // SAFETY: validate() parsed this payload against a registered capture-manifest version above.
     const manifest = artifact.payload as unknown as CaptureManifest;
     manifestByRun.set(
       incidentRunKey(artifact.incident_id, artifact.run_id),
@@ -636,7 +636,7 @@ export function verifySavedBundle(
         ),
       );
     }
-    if (manifest.provider_class === "fixture") {
+    if (manifest.provider_class === "fixture" && manifest.mode === "full-capture") {
       errors.push(
         integrityError(
           "MALFORMED_CONTRACT",

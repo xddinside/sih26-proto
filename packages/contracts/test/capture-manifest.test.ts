@@ -118,6 +118,7 @@ function manifestPayload(overrides: Partial<Record<string, unknown>> = {}): Reco
     pi_ai_version: "0.79.4",
     skill_tree_digest: `sha256:${"2".repeat(64)}`,
     tool_catalog_revision: "tool-catalog-1",
+    prompt_revision: "prompts@1.0",
     policy_revision: "policy-v1",
     perspectives: [
       { participant_id: "p-1", perspective: "code-level", order: 1 },
@@ -222,6 +223,12 @@ describe("capture-manifest verification", () => {
       expect(codes(result)).toContain("MALFORMED_CONTRACT");
       expect(messages(result).some((message) => message.includes("provider_class fixture"))).toBe(true);
     }
+  });
+
+  test("accepts a fixture provider_class for a rehearsal bundle", () => {
+    const files = validBundle({ mode: "rehearsal", provider_class: "fixture" });
+    const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
+    expect(result.ok).toBe(true);
   });
 
   test("rejects a role record referencing an absent artifact", () => {

@@ -6,7 +6,8 @@
  * one unchanged configuration digest.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { contentHash } from "@sih/contracts/hashes"
 
@@ -36,9 +37,12 @@ export interface StoredCaptureRecord {
   configDigest: string
   /** The captured run's assembled directory (journal + artifacts). */
   runPath: string
+  /** A completed terminal report or a retained partial/failed attempt. */
+  status?: "completed" | "partial" | "failed"
+  failureReason?: string | null
 }
 
-export const DEV_STORE_ROOT = new URL("../dev-runs", import.meta.url).pathname
+export const DEV_STORE_ROOT = fileURLToPath(new URL("../dev-runs", import.meta.url))
 export const DEV_STORE_FILE = join(DEV_STORE_ROOT, "dev-store.jsonl")
 
 /** The configuration values a presentation streak must keep unchanged. */
@@ -70,7 +74,7 @@ export async function appendCaptureRecord(
   record: StoredCaptureRecord,
   storeFile: string = DEV_STORE_FILE,
 ): Promise<void> {
-  await mkdir(DEV_STORE_ROOT, { recursive: true })
+  await mkdir(dirname(storeFile), { recursive: true })
   await writeFile(
     storeFile,
     `${JSON.stringify(record)}\n`,
@@ -101,6 +105,9 @@ export async function listCaptureRecords(
  * run 1 completes verified-remediation, run 2 fails verification. */
 export function runReachedTerminalState(record: StoredCaptureRecord): boolean {
   if (record.agents !== "real" || record.mode !== "full-capture") {
+    return false
+  }
+  if (record.status !== undefined && record.status !== "completed") {
     return false
   }
   if (!record.manifestSealed) {

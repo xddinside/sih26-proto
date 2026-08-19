@@ -37,6 +37,8 @@ describe("schema registry", () => {
     expect(classifySchema("nope", "1.0").kind).toBe("unknown-schema");
     expect(classifySchema("incident-trigger", "0.9").kind).toBe("stale-schema");
     expect(classifySchema("incident-trigger", "1.0").kind).toBe("ok");
+    expect(classifySchema("journal-event", "1.1").kind).toBe("ok");
+    expect(classifySchema("capture-manifest", "1.1").kind).toBe("ok");
   });
 
   test("unknown schema name returns UNKNOWN_SCHEMA", () => {
