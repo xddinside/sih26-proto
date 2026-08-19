@@ -22,8 +22,7 @@ import { fileURLToPath } from "node:url"
 import { contentHash, sha256Bytes } from "@sih/contracts/hashes"
 import { parseJsonTextStrict } from "@sih/contracts/canonical"
 import { verifySavedBundle } from "@sih/contracts/saved-bundle"
-import type { ArtifactEnvelope } from "@sih/contracts/types"
-import type { JournalEvent } from "@sih/contracts/types"
+import type { ArtifactEnvelope, JournalEvent } from "@sih/contracts/types"
 
 import { SAVED_RUNS_ROOT } from "./constants.js"
 
@@ -43,9 +42,31 @@ interface RemapTable {
   [oldId: string]: string
 }
 
-function remapJson(value: unknown, remap: RemapTable): unknown {
+/** Payload fields whose values are content hashes of sealed artifacts. */
+const ARTIFACT_HASH_REFERENCE_KEYS = new Set([
+  "artifact_ref",
+  "run_artifact_ref",
+  "submission_id",
+  "submission_ref",
+  "plan_ref",
+  "remediation_ref",
+  "verification_report_ref",
+  "release_gate_ref",
+  "rollout_plan_ref",
+  "watch_plan_ref",
+  "action_gate_ref",
+  "recovery_point_id",
+  "input_refs",
+])
+
+function remapJson(
+  value: unknown,
+  remap: RemapTable,
+  hashRemap: ReadonlyMap<string, string> = new Map(),
+  fieldName?: string,
+): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry) => remapJson(entry, remap))
+    return value.map((entry) => remapJson(entry, remap, hashRemap, fieldName))
   }
   if (typeof value === "object" && value !== null) {
     const record = value as Record<string, unknown>
@@ -53,13 +74,35 @@ function remapJson(value: unknown, remap: RemapTable): unknown {
     for (const [key, entry] of Object.entries(record)) {
       if (key === "incident_id" && typeof entry === "string" && remap[entry] !== undefined) {
         next[key] = remap[entry]
+      } else if (
+        typeof entry === "string" &&
+        ARTIFACT_HASH_REFERENCE_KEYS.has(key) &&
+        hashRemap.has(entry)
+      ) {
+        next[key] = hashRemap.get(entry)
       } else {
-        next[key] = remapJson(entry, remap)
+        next[key] = remapJson(entry, remap, hashRemap, key)
       }
     }
     return next
   }
+  if (typeof value === "string" && fieldName !== undefined && ARTIFACT_HASH_REFERENCE_KEYS.has(fieldName)) {
+    return hashRemap.get(value) ?? value
+  }
   return value
+}
+
+function recomputeManifestDigest(payload: unknown): unknown {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return payload
+  const record = payload as Record<string, unknown>
+  if (!("manifest_digest" in record)) return payload
+  const withoutDigest: Record<string, unknown> = { ...record }
+  delete withoutDigest.manifest_digest
+  const digest = contentHash(withoutDigest as never)
+  if (!digest.ok) {
+    throw new Error(`manifest digest failed: ${digest.error.message}`)
+  }
+  return { ...withoutDigest, manifest_digest: digest.value }
 }
 
 /** Re-seal an envelope against a remapped incident id. */
@@ -67,9 +110,10 @@ function remapEnvelope(
   envelope: ArtifactEnvelope,
   remap: RemapTable,
   newId: string,
+  hashRemap: ReadonlyMap<string, string>,
 ): { envelope: ArtifactEnvelope; oldHash: string; newHash: string } {
   const oldHash = envelope.content_hash
-  const payload = remapJson(envelope.payload, remap)
+  const payload = recomputeManifestDigest(remapJson(envelope.payload, remap, hashRemap))
   const hashResult = contentHash(payload as never)
   if (!hashResult.ok) {
     throw new Error(`cannot re-hash artifact payload: ${hashResult.error.message}`)
@@ -87,7 +131,7 @@ function remapJournalEvent(
   remap: RemapTable,
   hashRemap: Map<string, string>,
 ): JournalEvent {
-  const next = remapJson(event, remap) as JournalEvent & {
+  const next = remapJson(event, remap, hashRemap) as JournalEvent & {
     artifact_ref?: { content_hash?: string }
     evaluation?: { facts?: Array<{ evidence_refs?: Array<{ kind?: string; ref?: string }> }> }
   }
@@ -172,15 +216,43 @@ export async function assembleIncident(
     throw new Error(`captured incident ${source.capturedIncidentId} has no journal events`)
   }
 
-  const envelopes = new Map<string, ArtifactEnvelope>()
-  const hashRemap = new Map<string, string>()
+  const sourceEnvelopes = new Map<string, ArtifactEnvelope>()
   for (const event of events) {
     if (event.type !== "artifact_sealed") continue
     const hash = event.artifact_ref.content_hash
     const envelope = await runner.loadEnvelope(hash)
-    const remapped = remapEnvelope(envelope, remap, source.savedId)
-    envelopes.set(remapped.newHash, remapped.envelope)
-    hashRemap.set(remapped.oldHash, remapped.newHash)
+    sourceEnvelopes.set(hash, envelope)
+  }
+
+  // A capture manifest points at agent-run artifacts, which point at terminal
+  // artifacts. Rehashing a referenced artifact changes the parent payload, so
+  // resolve the old->new hash table until every dependent payload is stable.
+  let hashRemap = new Map<string, string>(
+    [...sourceEnvelopes.keys()].map((hash) => [hash, hash]),
+  )
+  let envelopes = new Map<string, ArtifactEnvelope>()
+  let stable = false
+  for (let pass = 0; pass <= sourceEnvelopes.size; pass += 1) {
+    const nextHashRemap = new Map<string, string>()
+    const nextEnvelopes = new Map<string, ArtifactEnvelope>()
+    for (const envelope of sourceEnvelopes.values()) {
+      const remapped = remapEnvelope(envelope, remap, source.savedId, hashRemap)
+      nextHashRemap.set(remapped.oldHash, remapped.newHash)
+      nextEnvelopes.set(remapped.newHash, remapped.envelope)
+    }
+    envelopes = nextEnvelopes
+    if (
+      nextHashRemap.size === hashRemap.size &&
+      [...nextHashRemap].every(([oldHash, newHash]) => hashRemap.get(oldHash) === newHash)
+    ) {
+      hashRemap = nextHashRemap
+      stable = true
+      break
+    }
+    hashRemap = nextHashRemap
+  }
+  if (!stable) {
+    throw new Error("artifact reference remapping did not converge")
   }
 
   const remappedEvents = events.map((event) => remapJournalEvent(event, remap, hashRemap))

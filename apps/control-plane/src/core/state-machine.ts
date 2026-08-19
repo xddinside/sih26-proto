@@ -643,7 +643,7 @@ export class ControlPlane {
     }
   }
 
-  /** Sum durable reservations before admitting another work unit. */
+  /** Sum active durable reservations before admitting another work unit. */
   private admittedBudgetUsage(incidentId: string, runId: string): OrchestratorWorkBudget {
     const usage: OrchestratorWorkBudget = {
       model_turns: 0,
@@ -651,8 +651,20 @@ export class ControlPlane {
       session_wall_clock_ms: 0,
       run_wall_clock_ms: 0,
     }
-    for (const event of this.journal.events(incidentId)) {
-      if (event.type !== "work_requested" || event.run_id !== runId || event.status !== "admitted") continue
+    const events = this.journal.events(incidentId)
+    const completedWorkIds = new Set<string>()
+    for (const event of events) {
+      if (event.type === "work_completed" && event.run_id === runId) {
+        completedWorkIds.add(event.work_id)
+      }
+    }
+    for (const event of events) {
+      if (
+        event.type !== "work_requested" ||
+        event.run_id !== runId ||
+        event.status !== "admitted" ||
+        completedWorkIds.has(event.work_id)
+      ) continue
       usage.model_turns += event.budget.model_turns
       usage.non_terminal_tool_calls += event.budget.non_terminal_tool_calls
       usage.session_wall_clock_ms += event.budget.session_wall_clock_ms

@@ -508,6 +508,11 @@ async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void>
 
   const savedId = run === 1 ? SAVED_INCIDENT_1 : SAVED_INCIDENT_2
 
+  // A prior failed attempt is already retained in the append-only dev store.
+  // Clear its scratch staging directory so a new partial snapshot can never
+  // inherit an older run's journal or capture metadata.
+  await rm(stagingDir(run), { recursive: true, force: true })
+
   let facts: CaptureFacts
   let alert: shop.LiveAlert
   let adapters: { releaseAdapter: ReleaseAdapterLike; evidenceRunner: EvidenceRunnerLike }
