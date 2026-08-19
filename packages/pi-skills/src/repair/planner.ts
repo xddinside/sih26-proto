@@ -14,7 +14,7 @@
  * exists. The planner never reviews or tests its own plan.
  */
 import { validate } from "@sih/contracts/parse"
-import type { RemediationProposal } from "@sih/contracts/types"
+import type { RemediationDraft, RemediationProposal } from "@sih/contracts/types"
 
 export type RemediationDisposition =
   "allowed" | "approval-required" | "prohibited" | "observe-only"
@@ -30,6 +30,17 @@ export interface PlannerDraft {
     changedSurfaces: string[]
   }
   declaredAction: { adapter: string; actionClass: string; command: string }
+}
+
+/** The planner fields the Orchestrator consumes to seal the Remediation
+ * Proposal. Shared by the fixture text parser and the real Remediation
+ * Draft mapper so the two paths cannot drift. */
+export interface PlannerDraftView {
+  changeDescription: string
+  citations: { change: string; cited_item_ids: string[] }[]
+  testPlan: string[]
+  changedSurfaces: string[]
+  blastRadius?: RemediationProposal["blast_radius"]
 }
 
 /**
@@ -64,6 +75,24 @@ export function assembleProposalDraft(plannerText: string): PlannerDraft {
 export function uncoveredSurfaces(draft: PlannerDraft): string[] {
   const covered = new Set(draft.recoveryPointDraft.changedSurfaces)
   return draft.changedSurfaces.filter((surface) => !covered.has(surface))
+}
+
+/** Map a schema-valid Remediation Draft (the planner's typed terminal
+ * submission) to the fields driveRepair consumes. The draft records the
+ * model's declared risk class and disposition; the Control Plane recomputes
+ * the action-risk class from policy and owns the proposal's risk, so only
+ * the change description, citations, tests, and surfaces cross here. The
+ * model's full declaration stays sealed in the `remediation-draft` artifact. */
+export function fromRemediationDraft(draft: RemediationDraft): PlannerDraftView {
+  return {
+    changeDescription: draft.change_description,
+    citations: draft.citations.map((citation) => ({
+      change: citation.change,
+      cited_item_ids: citation.cited_item_ids,
+    })),
+    testPlan: draft.test_plan,
+    changedSurfaces: draft.changed_surfaces,
+  }
 }
 
 /** Sealed Remediation Proposal shape check, before the Control Plane seals. */

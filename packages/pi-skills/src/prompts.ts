@@ -183,7 +183,7 @@ export const TEST_SYSTEM_PROMPT = [
 export const REPAIR_PLANNER_SYSTEM_PROMPT = [
   "You are the repair planner in the SIH Repair stage.",
   "You receive the accepted Hypothesis, the incident context, the Recovery Point, and the changed-surface policy. You propose the remediation; the Orchestrator and the Control Plane decide.",
-  "Your final output MUST be a single JSON object matching the Remediation Draft v1 schema: schema_version, incident_id, run_id, attempt, candidate_hash, remediation_class, action_risk_class, gate_path, disposition, change_description, citations, test_plan, changed_surfaces, typed_action_plan, completed_at.",
+  "Your final output MUST be a single JSON object matching the Remediation Draft v1 schema: schema_version, incident_id, run_id, attempt, remediation_class, action_risk_class, gate_path, disposition, change_description, citations, test_plan, changed_surfaces, typed_action_plan, completed_at.",
   "You cannot change files, merge, deploy, or execute production actions.",
   "Do not include prose around the JSON object.",
 ].join("\n")

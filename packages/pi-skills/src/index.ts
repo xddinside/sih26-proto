@@ -150,13 +150,26 @@ export {
   assembleProposalDraft,
   uncoveredSurfaces,
   validateProposalPayload,
+  fromRemediationDraft,
 } from "./repair/planner.js"
-export type { PlannerDraft, RemediationDisposition } from "./repair/planner.js"
+export type {
+  PlannerDraft,
+  PlannerDraftView,
+  RemediationDisposition,
+} from "./repair/planner.js"
 export {
   computeCandidateHash,
   validateImplementerDiff,
   assertExecutableSurface,
+  changedFilesFromDiff,
+  assertDiffInScope,
 } from "./repair/implementer.js"
+export { runRealRepairRound } from "./repair/repair-real.js"
+export type {
+  RealRepairRoundOptions,
+  RepairRoundResult,
+  RepairSealSurface,
+} from "./repair/repair-real.js"
 
 export {
   parseReviewReport,
@@ -202,6 +215,7 @@ export type {
   GateEvaluationResponse,
   SubagentRunRecord,
   StageOutcome,
+  RepairRoundInput,
   WatchSample,
 } from "./orchestrator/orchestrator.js"
 export { HttpControlPlaneProposals } from "./orchestrator/http-proposals.js"

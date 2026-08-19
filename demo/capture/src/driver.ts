@@ -1218,31 +1218,23 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       changedFiles: ["src/payment/card.js"],
       changedSurfaces: ["src/payment/card.js"],
       runPlanner:
+        kit === null ? async () => plannerDraftText(ids) : undefined,
+      runImplementer:
+        kit === null ? async () => implementerDiffText() : undefined,
+      runRepair:
         kit === null
-          ? async () => plannerDraftText(ids)
-          : async () =>
-              kit.runPlanner({
-                incidentId,
-                runId,
-                attempt: 1,
-                acceptedHypothesis: JSON.stringify(hypotheses.h1),
-                changeSurfacePolicy: "only src/payment/card.js may change; one-line card-type clause restoration",
+          ? undefined
+          : (round) =>
+              kit.runRepair({
+                ...round,
+                revisionId,
+                acceptedHypothesis: JSON.stringify(round.acceptedHypothesis),
+                changeSurfacePolicy:
+                  "only src/payment/card.js may change; one-line card-type clause restoration",
                 recoveryPointSummary:
                   "recovery-point-card-type restores the compose project file hash, the seeded image digest, and the flagd defaults",
-                changedSurfaces: ["src/payment/card.js"],
-                plannerTask: "plan the one-line card-type restoration for the accepted Hypothesis H1",
-              }),
-      runImplementer:
-        kit === null
-          ? async () => implementerDiffText()
-          : async () =>
-              kit.runImplementer({
-                incidentId,
-                runId,
-                attempt: 1,
-                baseRef,
-                changedFiles: ["src/payment/card.js"],
-                implementerTask: "apply the one-line card-type restoration in the copy-on-write worktree",
+                declaredSurfaces: round.changedSurfaces,
+                allowedChangedFiles: round.changedFiles,
                 baseFiles: new Map(Object.entries(options.agentSeedFiles ?? {})),
               }),
     })

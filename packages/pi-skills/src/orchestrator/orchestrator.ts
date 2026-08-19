@@ -39,10 +39,13 @@ import { buildLaterContext } from "../fusion/traces.js"
 import type { FusionRunArtifact } from "../fusion/traces.js"
 import { buildDeterministicBrief } from "../prompts.js"
 import {
+  assertDiffInScope,
   computeCandidateHash,
   validateImplementerDiff,
 } from "../repair/implementer.js"
-import type { RemediationDisposition } from "../repair/planner.js"
+import type { RepairRoundResult } from "../repair/repair-real.js"
+import type { PlannerDraftView, RemediationDisposition } from "../repair/planner.js"
+import { fromRemediationDraft } from "../repair/planner.js"
 import { SkillSession } from "../session.js"
 import type { Skill } from "../skill-catalog.js"
 import type { WorkerRuntime } from "../worker/bootstrap.js"
@@ -304,6 +307,22 @@ export interface StageOutcome {
   detail: string
 }
 
+/** The repair-round input the Orchestrator hands to the real-agent runner
+ * (issue #27). The runner adds the Evidence revision, the isolated worktree
+ * base files, and the recovery summary from the caller's closure. */
+export interface RepairRoundInput {
+  incidentId: string
+  runId: string
+  attempt: number
+  acceptedHypothesis: Hypothesis
+  plannerTask: string
+  implementerTask: string
+  baseRef: string
+  changedFiles: readonly string[]
+  changedSurfaces: readonly string[]
+  parentAgentId: string
+}
+
 export class OrchestratorError extends Error {
   constructor(
     public readonly code: string,
@@ -357,6 +376,8 @@ export const NO_CANDIDATE_HASH = `sha256:${"0".repeat(64)}`
 export class PiOrchestratorExtension {
   readonly records: SubagentRunRecord[] = []
   readonly fusionRounds: FusionRoundResult[] = []
+  /** The real repair rounds that ran, for inspection; never model context. */
+  readonly repairRounds: RepairRoundResult[] = []
   private readonly options: OrchestratorOptions
   private readonly skills: Map<string, Skill>
   private currentStage: string
@@ -808,11 +829,15 @@ export class PiOrchestratorExtension {
     })
   }
 
-  /** Repair: one planner subagent, then one implementer subagent in its own
-   * copy-on-write worktree; the Orchestrator integrates the candidate into
-   * the sole integration worktree. The Control Plane computes the
-   * deterministic action-risk class; the candidate hash comes from the
-   * shared contract helper, never from the model. */
+  /** Repair: two separate bounded repair roles (issue #27). The real-agent
+   * path runs the planner and the implementer as fresh Pi role sessions
+   * through the `runRepair` hook; the fixture path keeps the skill-bound
+   * planner/implementer subagents and their canned text callbacks for
+   * offline tests only. In both paths the Orchestrator integrates the
+   * candidate into the sole integration worktree: the Control Plane computes
+   * the deterministic action-risk class and the candidate hash comes from
+   * the shared contract helper, never from the model. Out-of-scope changes
+   * fail before Verify. */
   async driveRepair(options: {
     acceptedHypothesis: Hypothesis
     disposition: RemediationDisposition
@@ -838,36 +863,77 @@ export class PiOrchestratorExtension {
     changedSurfaces: readonly string[]
     runPlanner?: (session: SkillSession) => Promise<string>
     runImplementer?: (session: SkillSession) => Promise<string>
+    /** Real-agent mode: runs the bounded planner then implementer Pi role
+     * sessions and returns the accepted plan and applied diff. Absent, the
+     * deterministic fixture path runs. */
+    runRepair?: (options: RepairRoundInput) => Promise<RepairRoundResult>
   }): Promise<StageOutcome> {
     void options.policyVersion
     await this.enterStage("repair")
-    const planner = this.spawnSubagent({
-      skillName: "sih-repair-planner",
-      role: "repair-planner",
-      taskInput: options.plannerTask,
-      stage: "repair",
-      scratchDir: `${this.scratchRoot()}/repair-planner`,
-    })
-    const plannerText =
-      options.runPlanner !== undefined ? await options.runPlanner(planner) : ""
-    const draft = parsePlannerDraft(plannerText)
-    const implementer = this.spawnSubagent({
-      skillName: "sih-repair-implementer",
-      role: "repair-implementer",
-      taskInput: options.implementerTask,
-      stage: "repair",
-      scratchDir: `${this.scratchRoot()}/repair-implementer`,
-    })
-    const diffText =
-      options.runImplementer !== undefined
-        ? await options.runImplementer(implementer)
-        : ""
+    let draft: PlannerDraftView
+    let diffText: string
+    if (options.runRepair !== undefined) {
+      // Real-agent path: two bounded Pi role sessions, no canned builders.
+      const round = await options.runRepair({
+        incidentId: this.options.runtime.checkpoint.incidentId,
+        runId: this.options.runtime.checkpoint.runId,
+        attempt: this.options.runtime.checkpoint.attempt,
+        acceptedHypothesis: options.acceptedHypothesis,
+        plannerTask: options.plannerTask,
+        implementerTask: options.implementerTask,
+        baseRef: options.baseRef,
+        changedFiles: options.changedFiles,
+        changedSurfaces: options.changedSurfaces,
+        parentAgentId: `orchestrator-${this.options.runtime.checkpoint.runId}`,
+      })
+      this.repairRounds.push(round)
+      if (!round.valid) {
+        // Preserved honestly: no canned fallback, dependent scheduling stops.
+        throw new OrchestratorError(
+          "REPAIR_FAILED",
+          `repair round ${round.failure?.role ?? "unknown"} ${round.failure?.status ?? "failed"}: ${round.failure?.message ?? "no accepted plan or diff"}`,
+        )
+      }
+      if (round.planner === undefined || round.implementer === undefined) {
+        throw new OrchestratorError(
+          "REPAIR_FAILED",
+          "repair round returned no accepted plan or applied diff",
+        )
+      }
+      draft = fromRemediationDraft(round.planner.draft)
+      diffText = round.implementer.diffText
+    } else {
+      const planner = this.spawnSubagent({
+        skillName: "sih-repair-planner",
+        role: "repair-planner",
+        taskInput: options.plannerTask,
+        stage: "repair",
+        scratchDir: `${this.scratchRoot()}/repair-planner`,
+      })
+      const plannerText =
+        options.runPlanner !== undefined ? await options.runPlanner(planner) : ""
+      draft = parsePlannerDraft(plannerText)
+      const implementer = this.spawnSubagent({
+        skillName: "sih-repair-implementer",
+        role: "repair-implementer",
+        taskInput: options.implementerTask,
+        stage: "repair",
+        scratchDir: `${this.scratchRoot()}/repair-implementer`,
+      })
+      diffText =
+        options.runImplementer !== undefined
+          ? await options.runImplementer(implementer)
+          : ""
+    }
 
     const { diffHash } = validateImplementerDiff({
       diffText,
       baseRef: options.baseRef,
       allowedPaths: options.changedFiles,
     })
+    // Out-of-scope changes fail before Verify in the Orchestrator too, never
+    // reaching the proposal or a downstream stage.
+    assertDiffInScope({ diffText, allowedPaths: options.changedFiles })
 
     // The deterministic action-risk class comes from the Control Plane policy
     // decision; the Orchestrator never computes it.
@@ -1177,18 +1243,7 @@ function hashOf(payload: unknown): HashString {
   return digest.value
 }
 
-function parsePlannerDraft(text: string): {
-  changeDescription: string
-  citations: { change: string; cited_item_ids: string[] }[]
-  testPlan: string[]
-  changedSurfaces: string[]
-  blastRadius?: {
-    services?: string[]
-    environments?: string[]
-    cohorts?: string[]
-  }
-  recoveryPointDraft: { id: string; changed_surfaces: string[] }
-} {
+function parsePlannerDraft(text: string): PlannerDraftView {
   const start = text.indexOf("{")
   const end = text.lastIndexOf("}")
   if (start === -1 || end === -1 || end <= start) {
@@ -1204,7 +1259,9 @@ function parsePlannerDraft(text: string): {
       "planner output is not an object"
     )
   }
-  const draft = parsed as Partial<ReturnType<typeof parsePlannerDraft>>
+  const draft = parsed as Partial<PlannerDraftView> & {
+    recoveryPointDraft?: unknown
+  }
   if (
     draft.changeDescription === undefined ||
     draft.citations === undefined ||
@@ -1217,5 +1274,13 @@ function parsePlannerDraft(text: string): {
       "planner draft missing changeDescription, citations, testPlan, changedSurfaces, or recoveryPointDraft"
     )
   }
-  return draft as ReturnType<typeof parsePlannerDraft>
+  return {
+    changeDescription: draft.changeDescription,
+    citations: draft.citations,
+    testPlan: draft.testPlan,
+    changedSurfaces: draft.changedSurfaces,
+    ...(draft.blastRadius === undefined
+      ? {}
+      : { blastRadius: draft.blastRadius }),
+  }
 }

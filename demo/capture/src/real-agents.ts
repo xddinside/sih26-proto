@@ -15,19 +15,16 @@ import type {
 import type { FusionRoundResult } from "../../../packages/pi-skills/src/fusion/fusion-runtime.js"
 import { runRealFusionRound } from "../../../packages/pi-skills/src/fusion/fusion-real.js"
 import type { FusionSealSurface } from "../../../packages/pi-skills/src/fusion/fusion-real.js"
-import type { AgentSessionRecord, AgentSessionKit, WorktreeHost } from "../../../packages/pi-skills/src/agent/roles.js"
+import type { AgentSessionRecord, AgentSessionKit } from "../../../packages/pi-skills/src/agent/roles.js"
 import {
-  createWorktreeHost,
-  runImplementerRole,
   runOrchestratorRole,
-  runPlannerRole,
   runReviewRole,
   runTestRole,
 } from "../../../packages/pi-skills/src/agent/roles.js"
+import { runRealRepairRound } from "../../../packages/pi-skills/src/repair/repair-real.js"
+import type { RepairRoundResult } from "../../../packages/pi-skills/src/repair/repair-real.js"
 import type {
-  ImplementedDiff,
   OrchestratorReport,
-  RemediationDraft,
   ReviewReport,
   TestReport,
   CaptureManifest,
@@ -124,13 +121,9 @@ export class RealAgentKit {
     }
   }
 
-  private kit(seed?: { baseRef: string; baseFiles: ReadonlyMap<string, string> }): {
-    kit: AgentSessionKit
-    worktree: WorktreeHost | null
-  } {
+  private kit(): AgentSessionKit {
     const { lease } = this.requireSurface()
-    let worktree: WorktreeHost | null = null
-    const agentKit: AgentSessionKit = {
+    return {
       gateway: this.options.gateway,
       lease,
       candidateHash: "no-candidate-hash",
@@ -141,11 +134,6 @@ export class RealAgentKit {
       signal: this.options.signal,
       readBroker: this.options.readBroker,
     }
-    if (seed !== undefined) {
-      worktree = createWorktreeHost(seed.baseRef, seed.baseFiles)
-      agentKit.worktree = worktree
-    }
-    return { kit: agentKit, worktree }
   }
 
   private record(session: AgentSessionRecord): void {
@@ -196,73 +184,45 @@ export class RealAgentKit {
     return result
   }
 
-  /** Run the repair planner role; returns the planner draft text the
-   * deterministic Orchestrator path parses (camelCase shape). */
-  async runPlanner(options: {
+  /** Run the real repair round: one bounded planner session then one bounded
+   * implementer session in its isolated worktree. Records every session and
+   * keeps the applied diff for the review/test stages. A failed or aborted
+   * round is returned honestly and stops the run; no canned fallback. */
+  async runRepair(options: {
     incidentId: string
     runId: string
     attempt: number
+    revisionId: string
     acceptedHypothesis: string
     changeSurfacePolicy: string
     recoveryPointSummary: string
-    changedSurfaces: readonly string[]
-    plannerTask: string
-  }): Promise<string> {
-    const { kit } = this.kit()
-    const result = await runPlannerRole(kit, options)
-    this.record(result.session)
-    if (result.payload === null || result.status !== "succeeded") {
-      throw new Error(`real planner session ${result.status}: ${result.failureReason ?? "no payload"}`)
-    }
-    const payload = result.payload
-    return JSON.stringify({
-      changeDescription: payload.change_description,
-      citations: payload.citations.map((citation) => ({
-        change: citation.change,
-        cited_item_ids: citation.cited_item_ids,
-      })),
-      testPlan: payload.test_plan,
-      changedSurfaces: payload.changed_surfaces,
-      blastRadius: { services: ["payment"], environments: ["demo"], cohorts: [] },
-      recoveryPointDraft: {
-        id: "recovery-point-card-type",
-        changed_surfaces: [
-          "src/payment/card.js",
-          "compose service payment (restart via docker compose up -d payment)",
-        ],
-      },
-    })
-  }
-
-  /** Run the repair implementer role in its private worktree; returns the
-   * applied diff text. */
-  async runImplementer(options: {
-    incidentId: string
-    runId: string
-    attempt: number
+    declaredSurfaces: readonly string[]
+    allowedChangedFiles: readonly string[]
     baseRef: string
-    changedFiles: readonly string[]
-    implementerTask: string
     baseFiles: ReadonlyMap<string, string>
-  }): Promise<string> {
-    const { kit, worktree } = this.kit({
-      baseRef: options.baseRef,
-      baseFiles: options.baseFiles,
+    plannerTask: string
+    implementerTask: string
+    parentAgentId: string
+  }): Promise<RepairRoundResult> {
+    const { lease } = this.requireSurface()
+    const result = await runRealRepairRound({
+      ...options,
+      gateway: this.options.gateway,
+      lease,
+      readBroker: this.options.readBroker,
+      seal: this.sealSurface(),
+      model: this.options.model,
+      reasoning: this.options.reasoning,
+      limits: this.options.limits,
+      signal: this.options.signal,
     })
-    const result = await runImplementerRole(kit, options)
-    this.record(result.session)
-    if (result.payload === null || result.status !== "succeeded") {
-      throw new Error(`real implementer session ${result.status}: ${result.failureReason ?? "no payload"}`)
+    for (const session of result.sessions) {
+      this.record(session)
     }
-    const payload = result.payload
-    if (worktree === null) {
-      throw new Error("implementer worktree was not created")
+    if (result.implementer !== undefined) {
+      this.implementerDiff = result.implementer.diffText
     }
-    if (payload.diff_text !== worktree.diffText()) {
-      throw new Error("implementer payload diff does not match the worktree diff")
-    }
-    this.implementerDiff = payload.diff_text
-    return payload.diff_text
+    return result
   }
 
   /** Run every review role session for the candidate; returns the reports the
@@ -281,7 +241,7 @@ export class RealAgentKit {
     checkHints?: readonly string[]
     inputRefs?: readonly string[]
   }): Promise<ReviewReport[]> {
-    const { kit } = this.kit()
+    const kit = this.kit()
     const reports: ReviewReport[] = []
     for (const role of options.roles) {
       const result = await runReviewRole(kit, {
@@ -320,7 +280,7 @@ export class RealAgentKit {
     changedFiles: readonly string[]
     runsByLayer: Record<string, { tool: string; toolVersion: string; target: string; receiptRef: string; runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[] }>
   }): Promise<TestReport[]> {
-    const { kit } = this.kit()
+    const kit = this.kit()
     const reports: TestReport[] = []
     for (const layer of options.layers) {
       const entry = options.runsByLayer[layer]
@@ -358,7 +318,7 @@ export class RealAgentKit {
     stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string }
     runContext: string
   }): Promise<OrchestratorReport | null> {
-    const { kit } = this.kit()
+    const kit = this.kit()
     const result = await runOrchestratorRole(kit, options)
     this.record(result.session)
     if (result.payload === null || result.status !== "succeeded") {

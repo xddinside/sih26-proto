@@ -75,20 +75,15 @@ export interface AgentRoleResult<T> {
   failureReason?: string
 }
 
-const ROLE_TOOL = "role_session_tool"
-
 /** The authority set for a role session: the terminal tool that ends the
- * role plus the role's declared tools. Every registered tool must be inside
- * the effective set or the Pi loop never exposes it. */
+ * role plus the tools actually registered for it (the brokered read and the
+ * worktree tools). A tool the session cannot call is never in the set, so no
+ * role gains authority it was not given. */
 function authorityTools(
   terminalName: string,
-  tools: readonly string[],
+  registeredToolNames: readonly string[],
 ): string[] {
-  const out = [terminalName, ...tools]
-  if (out.includes(ROLE_TOOL)) {
-    return out
-  }
-  return [ROLE_TOOL, ...out]
+  return [terminalName, ...new Set(registeredToolNames)]
 }
 
 interface RoleSessionRunOptions {
@@ -143,8 +138,11 @@ async function runRoleSession<T>(
   if (options.kit.worktree !== undefined) {
     registeredTools.push(...createWorktreeTools(options.kit.worktree))
   }
-  const toolNames = authorityTools(options.terminalName, options.tools ?? [])
   registeredTools.push(terminal.tool)
+  const toolNames = authorityTools(options.terminalName, [
+    ...registeredTools.map((tool) => tool.name),
+    ...(options.tools ?? []),
+  ])
   const session = new PiRoleSession({
     agentId: options.agentId,
     parentAgentId: options.parentAgentId ?? options.agentId,
@@ -209,6 +207,7 @@ export interface PlannerRoleOptions {
   recoveryPointSummary: string
   changedSurfaces: readonly string[]
   plannerTask: string
+  parentAgentId?: string
 }
 
 /** Run the repair planner role; the sealed payload is the Remediation
@@ -220,6 +219,7 @@ export function runPlannerRole(
   return runRoleSession<RemediationDraft>({
     kit,
     agentId: `repair-planner-${kit.lease.runId}`,
+    parentAgentId: options.parentAgentId,
     // The journal's model_use agent_role vocabulary has one repair slot.
     roleLabel: "repair-agent",
     systemPrompt: REPAIR_PLANNER_SYSTEM_PROMPT,
@@ -346,6 +346,11 @@ export interface ImplementerRoleOptions {
   baseRef: string
   changedFiles: readonly string[]
   implementerTask: string
+  /** The accepted Remediation the implementer must stay inside. */
+  acceptedRemediation?: string
+  /** The admitted Diagnosis (accepted Hypothesis) the Remediation cites. */
+  admittedDiagnosis?: string
+  parentAgentId?: string
 }
 
 /** Run the repair implementer role against its private worktree; the sealed
@@ -360,6 +365,7 @@ export async function runImplementerRole(
   const result = await runRoleSession<ImplementedDiff>({
     kit,
     agentId: `repair-implementer-${kit.lease.runId}`,
+    parentAgentId: options.parentAgentId,
     // The journal's model_use agent_role vocabulary has one repair slot.
     roleLabel: "repair-agent",
     systemPrompt: REPAIR_IMPLEMENTER_SYSTEM_PROMPT,
@@ -368,6 +374,12 @@ export async function runImplementerRole(
       "",
       `## Base ref\n${options.baseRef}`,
       `## Allowed changed files\n${options.changedFiles.join("\n")}`,
+      ...(options.acceptedRemediation === undefined
+        ? []
+        : ["", "## Accepted Remediation", options.acceptedRemediation]),
+      ...(options.admittedDiagnosis === undefined
+        ? []
+        : ["", "## Admitted Diagnosis", options.admittedDiagnosis]),
       "",
       "Inspect the worktree, apply the remediation there, then return the " +
         "complete diff as the Implemented Diff v1 JSON object.",
