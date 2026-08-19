@@ -10,7 +10,7 @@ export function loadBundle(dir: string): Map<string, string> {
       if (statSync(full).isDirectory()) {
         walk(full);
       } else {
-        files.set(full.slice(dir.length + 1), readFileSync(full, "utf8"));
+        files.set(full.slice(dir.length + 1).replaceAll("\\", "/"), readFileSync(full, "utf8"));
       }
     }
   };

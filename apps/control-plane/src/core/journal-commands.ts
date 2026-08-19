@@ -10,6 +10,8 @@ import type {
   GateEvaluation,
   IncidentTrigger,
   JournalCommand,
+  OrchestratorWorkBudget,
+  OrchestratorWorkRequest,
   RunFailureReason,
   RunOutcome,
 } from "@sih/contracts/types"
@@ -333,5 +335,56 @@ export function modelUseCommand(
     token_use: tokenUse,
     tool_calls: toolCalls,
     ...options,
+  } as JournalCommand
+}
+
+/** Record both accepted and rejected Orchestrator work proposals. The event
+ * is audit-only; the journal reducer does not let it mutate stage state. */
+export function workRequestedCommand(
+  incidentId: string,
+  runId: string,
+  request: OrchestratorWorkRequest,
+  status: "admitted" | "rejected",
+  policyVersion: string,
+  recordedAt: string,
+  options: { code?: string; reason?: string; admittedArtifactRefs?: ArtifactRef[]; actorId?: string } = {},
+): JournalCommand {
+  return {
+    ...common(`work-request:${request.request_id}`, { id: options.actorId ?? `orchestrator-${runId}`, kind: "orchestrator" }, policyVersion, recordedAt),
+    type: "work_requested",
+    incident_id: incidentId,
+    run_id: runId,
+    attempt: request.attempt,
+    request_id: request.request_id,
+    work_id: request.work_id,
+    stage: request.stage,
+    status,
+    depends_on: request.depends_on,
+    budget: request.budget as OrchestratorWorkBudget,
+    admitted_artifact_refs: options.admittedArtifactRefs ?? [],
+    ...(options.code === undefined ? {} : { code: options.code }),
+    ...(options.reason === undefined ? {} : { reason: options.reason }),
+  } as JournalCommand
+}
+
+/** Record that a previously admitted work unit produced sealed outputs. */
+export function workCompletedCommand(
+  incidentId: string,
+  runId: string,
+  attempt: number,
+  workId: string,
+  artifactRefs: ArtifactRef[],
+  policyVersion: string,
+  recordedAt: string,
+  actorId = `orchestrator-${runId}`,
+): JournalCommand {
+  return {
+    ...common(`work-complete:${workId}`, { id: actorId, kind: "orchestrator" }, policyVersion, recordedAt),
+    type: "work_completed",
+    incident_id: incidentId,
+    run_id: runId,
+    attempt,
+    work_id: workId,
+    artifact_refs: artifactRefs,
   } as JournalCommand
 }

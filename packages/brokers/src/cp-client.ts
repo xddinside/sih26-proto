@@ -142,6 +142,8 @@ export class FakeControlPlaneClient implements ControlPlaneClient {
   readonly leases = new Set<string>()
   readonly permits = new Set<string>()
   readonly receipts: { incidentId: string; receipt: BrokerReceipt }[] = []
+  /** Model-use records captured for inspection. */
+  readonly modelUses: { incidentId: string; runId?: string; use: Record<string, unknown> }[] = []
   leaseError: string | undefined
   permitError: string | undefined
   /** When set, consumePermit rejects a mismatched candidate hash. */
@@ -170,7 +172,8 @@ export class FakeControlPlaneClient implements ControlPlaneClient {
     return { recorded: true }
   }
 
-  async recordModelUse(): Promise<{ recorded: boolean }> {
+  async recordModelUse(incidentId: string, runId: string | undefined, input: Record<string, unknown>): Promise<{ recorded: boolean }> {
+    this.modelUses.push({ incidentId, runId, use: input })
     return { recorded: true }
   }
 

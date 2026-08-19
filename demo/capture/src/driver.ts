@@ -16,14 +16,25 @@
  * surface are the only seams the driver controls.
  */
 import { createHmac } from "node:crypto"
+import { fileURLToPath } from "node:url"
 
-import { ModelGateway, ReadBroker } from "@sih/brokers"
-import type { ControlPlaneClient, LeaseRef, ModelProvider } from "@sih/brokers"
+import { ModelGateway, ReadBroker, piAiStreamingProvider, stubProvider } from "@sih/brokers"
+import type { ControlPlaneClient, GatewayStreamingProvider, LeaseRef, ModelProvider } from "@sih/brokers"
+import type { ThinkingLevel } from "@earendil-works/pi-ai"
 import { deliveryKey, incidentKey, evidenceItemId } from "@sih/contracts/hashes"
-import type { BrokerReceipt, EvidenceItem, JournalEvent } from "@sih/contracts/types"
+import type {
+  BrokerReceipt,
+  EvidenceItem,
+  IncidentBrief,
+  JournalEvent,
+  OrchestratorWorkRequest,
+  ReviewReport,
+  TestReport,
+} from "@sih/contracts/types"
 import type { HashString } from "@sih/contracts/hashes"
 
 import { bootstrap } from "@sih/control-plane/src/bootstrap.js"
+import type { Runtime } from "@sih/control-plane/src/bootstrap.js"
 import type { Config } from "@sih/control-plane/src/config.js"
 import type { ControlPlane } from "@sih/control-plane/src/core/state-machine.js"
 import * as cmd from "@sih/control-plane/src/core/journal-commands.js"
@@ -35,14 +46,17 @@ import type { ResolverInput } from "@sih/control-plane/src/verify/resolver.js"
 import { reviewInputFromReport, testInputFromReport } from "@sih/control-plane/src/verify/verdict.js"
 
 import { bootstrapWorker } from "../../../packages/pi-skills/src/worker/bootstrap.js"
-import { DEMO_BUDGETS } from "../../../packages/pi-skills/src/worker/budgets.js"
+import { DEMO_BUDGETS, REHEARSAL_BUDGETS } from "../../../packages/pi-skills/src/worker/budgets.js"
 import { loadSkillTree } from "../../../packages/pi-skills/src/skill-catalog.js"
+import { installedVersion } from "../../../packages/pi-skills/src/versions.js"
 import { PiOrchestratorExtension } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import type {
   ControlPlaneProposals,
   EvidenceBundle,
 } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import { assembleVerdictInput } from "../../../packages/pi-skills/src/consolidation.js"
+import { fusionRunArtifactWire } from "../../../packages/pi-skills/src/fusion/traces.js"
+import type { AssignedTestReceipt, TestLayerCode } from "../../../packages/pi-skills/src/tests/test-runner.js"
 
 import {
   APPLICABILITY_TOOL_CATALOG,
@@ -59,6 +73,7 @@ import {
   SERVICE_NAME,
   STAGE1_WINDOWS,
   TENANT_ID,
+  TEST_TOOLS,
   TZDB_VERSION,
   WATCH_GATES,
 } from "./constants.js"
@@ -77,7 +92,26 @@ import {
   candidateCohortQuery,
 } from "./payloads.js"
 import type { CaptureFacts, EvidenceIds } from "./payloads.js"
+import { RealAgentKit } from "./real-agents.js"
+import type { FrozenRehearsalEvidence } from "./frozen-evidence.js"
+import { deterministicStreamingProvider } from "./deterministic-provider.js"
 import * as shop from "./shop.js"
+
+/** Content revision of the effective Orchestrator tool catalog. Keeping this
+ * derived from the typed names and parameter fields makes manifest provenance
+ * change when the bounded model-facing boundary changes. */
+const ORCHESTRATOR_TOOL_CATALOG_REVISION = hashOf({
+  catalog: "orchestrator-tools",
+  version: "1.1",
+  tools: [
+    { name: "inspect_orchestrator_state", parameters: [] },
+    {
+      name: "request_orchestrator_work",
+      parameters: ["request_id", "work_id", "stage", "attempt", "depends_on", "budget"],
+      budget: ["model_turns", "non_terminal_tool_calls", "session_wall_clock_ms", "run_wall_clock_ms"],
+    },
+  ],
+})
 
 export interface DriverOptions {
   run: 1 | 2
@@ -93,6 +127,43 @@ export interface DriverOptions {
   /** Run-specific evidence runners (T2/T3/T5 real runs, probes). */
   evidenceRunner: EvidenceRunner
   savedId: string
+  /** `real` drives Pi role sessions through the Model Gateway; `fixture`
+   * keeps the deterministic structured provider (CI default). */
+  agents?: "fixture" | "real"
+  /** The provider/model pair and perspectives for real-agent captures. */
+  agent?: RealCaptureAgent
+  /** The seeded source files the real implementer's worktree starts from. */
+  agentSeedFiles?: Record<string, string>
+  /** `rehearsal` runs record no presentation manifest; `full-capture` runs
+   * do. Defaults to `full-capture`. */
+  mode?: "rehearsal" | "full-capture"
+  /** Immutable saved Evidence Set input for issue-#29 rehearsals. */
+  frozenEvidence?: FrozenRehearsalEvidence
+  /** Explicit bounded role/run budgets for a rehearsal manifest. */
+  budgets?: RealCaptureAgent["budgets"]
+  /** Operator cancellation signal for the bounded run. */
+  signal?: AbortSignal
+  /** Best-effort export hook for an interrupted/failed attempt. */
+  onFailure?: (input: { incidentId: string; runId: string; cp: ControlPlane }) => Promise<void>
+}
+
+/** The real-agent capture configuration (capture.ts --agents=real). */
+export interface RealCaptureAgent {
+  provider: string
+  model: string
+  reasoning?: ThinkingLevel
+  /** Participant perspectives in Fusion participant order. */
+  perspectives: Array<{ participantId: string; perspective: string; order: number }>
+  /** Deterministic rehearsals inject a streaming transport; live captures use
+   * the Gateway's real provider transport. */
+  streaming?: GatewayStreamingProvider
+  providerClass?: "real" | "fixture"
+  budgets?: {
+    model_turns: number
+    non_terminal_tool_calls: number
+    session_wall_clock_ms: number
+    run_wall_clock_ms: number
+  }
 }
 
 export interface ReleaseAdapter {
@@ -135,7 +206,16 @@ export interface ReadAdapter {
   }>
 }
 
-export const SKILLS_ROOT = new URL("../../../packages/pi-skills", import.meta.url).pathname
+export const SKILLS_ROOT = fileURLToPath(new URL("../../../packages/pi-skills", import.meta.url))
+
+/** The deterministic skill-tree digest the capture manifest freezes: the
+ * canonical hash of every loaded skill's name and contract version. */
+export function skillTreeDigestOf(skills: Map<string, { contract: { name: string; version: string } }>): string {
+  const entries = [...skills.values()]
+    .map((skill) => `${skill.contract.name}@${skill.contract.version}`)
+    .sort()
+  return hashOf({ kind: "skill-tree", entries })
+}
 
 /** The real Read Broker adapters for the live shop backends. */
 export function liveReadAdapters(recorded: {
@@ -170,7 +250,7 @@ export function liveReadAdapters(recorded: {
       async read(request) {
         const key = request.query.includes("paymentFailure") ? "paymentFailure" : "paymentUnreachable"
         try {
-          const result = await shop.flagdValue(key)
+          const result = await shop.flagdValue(key, process.env.OTEL_DEMO_ROOT ?? "/tmp/opencode/demo-repo")
           return { outcome: "ok", data: { backend: request.backend, key, value: result.value }, row_count: 1 }
         } catch {
           return {
@@ -182,6 +262,47 @@ export function liveReadAdapters(recorded: {
             },
             row_count: 1,
           }
+        }
+      },
+    },
+  }
+}
+
+/** Frozen/recorded Read Broker adapters. Unlike the live adapters, these
+ * never call Prometheus, flagd, or the shop helpers; every rehearsal read is
+ * derived solely from the already-loaded Evidence Set facts. */
+export function recordedReadAdapters(recorded: {
+  errorRatio: number
+  callsPerSecond: number
+  flagFailure: number
+  flagUnreachable: boolean
+}): Record<string, ReadAdapter> {
+  return {
+    prometheus: {
+      async read(request) {
+        const value = request.query.includes("duration_bucket")
+          ? 0.01
+          : request.query.includes("calls")
+            ? recorded.callsPerSecond
+            : recorded.errorRatio
+        return {
+          outcome: "ok",
+          data: { backend: request.backend, query: request.query, value, labels: { service_name: "payment" } },
+          row_count: 1,
+        }
+      },
+    },
+    flagd: {
+      async read(request) {
+        const key = request.query.includes("paymentFailure") ? "paymentFailure" : "paymentUnreachable"
+        return {
+          outcome: "ok",
+          data: {
+            backend: request.backend,
+            key,
+            value: key === "paymentFailure" ? recorded.flagFailure : recorded.flagUnreachable,
+          },
+          row_count: 1,
         }
       },
     },
@@ -418,6 +539,12 @@ export interface CaptureReport {
   receiptIds: string[]
   artifactSchemas: string[]
   stageRecords: string[]
+  /** Which agent path drove the run. */
+  agents: "fixture" | "real"
+  /** The capture manifest sealed before the run closed. */
+  manifestSealed: boolean
+  /** How many agent-run-artifacts the run sealed. */
+  agentRunArtifacts: number
 }
 
 const REVIEW_SKILL_BY_ROLE: Record<string, string> = {
@@ -439,6 +566,133 @@ const TEST_SKILL_BY_LAYER: Record<string, string> = {
   T10: "sih-test-browser",
   T12: "sih-test-fault-recovery",
   T13: "sih-test-watch-rehearsal",
+}
+
+const TEST_RECEIPT_BY_LAYER: Record<string, string> = {
+  T1: RECEIPT_IDS.t1,
+  T2: RECEIPT_IDS.t2,
+  T3: RECEIPT_IDS.t3,
+  T4: RECEIPT_IDS.t4,
+  T5: RECEIPT_IDS.t5,
+  T7: RECEIPT_IDS.t7,
+  T9: RECEIPT_IDS.t9,
+  T10: RECEIPT_IDS.t10,
+  T12: RECEIPT_IDS.t12,
+  T13: RECEIPT_IDS.t13,
+}
+
+/** The recorded receipt runs per layer, handed to the real test sessions. */
+function realTestRunsByLayer(options: {
+  run: 1 | 2
+  candidateBuild: { imageId: string; buildOutput: string }
+  t3Run: { passed: boolean; output: string }
+  t5Run: { passed: boolean; output: string; failedCase: string | null }
+  probe4: shop.ProbeOutcome
+  probe9: shop.ProbeOutcome
+  rehearsal: { g2: number | null; g3: number | null; g4: number | null; calls: number }
+  drill: { restored: boolean; output: string }
+  /** The resolver's ownership-map selection the T5 report must bind to. */
+  t5Selection: string
+}): Record<string, {
+  tool: string
+  toolVersion: string
+  target: string
+  receiptRef: string
+  runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[]
+}> {
+  const { run, candidateBuild, t3Run, t5Run, probe4, probe9, rehearsal, drill, t5Selection } = options
+  const now = new Date().toISOString()
+  const runOf = (result: boolean | number, layer: string, extra: unknown, detail?: string) => {
+    const outcome = result === true || result === 1 ? "pass" : "fail"
+    return [{
+      run_hash: hashOf({ layer, ...(typeof extra === "object" && extra !== null ? extra : { value: extra }) }),
+      result: outcome as "pass" | "fail",
+      at: now,
+      ...(detail === undefined ? {} : { detail }),
+    }]
+  }
+  return {
+    T1: {
+      tool: TEST_TOOLS.T1.tool,
+      toolVersion: TEST_TOOLS.T1.tool_version,
+      target: TEST_TOOLS.T1.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T1,
+      runs: runOf(true, "T1", { config: "pinned-eslint-demo" }),
+    },
+    T2: {
+      tool: TEST_TOOLS.T2.tool,
+      toolVersion: TEST_TOOLS.T2.tool_version,
+      target: TEST_TOOLS.T2.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T2,
+      runs: runOf(true, "T2", { image: candidateBuild.imageId, output: candidateBuild.buildOutput }),
+    },
+    T3: {
+      tool: TEST_TOOLS.T3.tool,
+      toolVersion: TEST_TOOLS.T3.tool_version,
+      target: TEST_TOOLS.T3.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T3,
+      runs: runOf(t3Run.passed, "T3", { output: t3Run.output }),
+    },
+    T4: {
+      tool: TEST_TOOLS.T4.tool,
+      toolVersion: TEST_TOOLS.T4.tool_version,
+      target: TEST_TOOLS.T4.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T4,
+      runs: runOf(probe4.ok === probe4.total, "T4", { probe: probe4 }, `charge ${probe4.ok}/${probe4.total}`),
+    },
+    T5: {
+      tool: TEST_TOOLS.T5.tool,
+      toolVersion: TEST_TOOLS.T5.tool_version,
+      target: t5Selection,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T5,
+      runs: [{
+        run_hash: hashOf({ layer: "T5", output: t5Run.output }),
+        result: t5Run.passed ? "pass" : "fail",
+        at: now,
+        ...(t5Run.failedCase === null ? {} : { detail: t5Run.failedCase }),
+      }],
+    },
+    T7: {
+      tool: TEST_TOOLS.T7.tool,
+      toolVersion: TEST_TOOLS.T7.tool_version,
+      target: TEST_TOOLS.T7.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T7,
+      runs: runOf(true, "T7", { image: candidateBuild.imageId }),
+    },
+    T9: {
+      tool: TEST_TOOLS.T9.tool,
+      toolVersion: TEST_TOOLS.T9.tool_version,
+      target: TEST_TOOLS.T9.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T9,
+      runs: runOf(probe9.ok === probe9.total, "T9", { probe: probe9 }, `probe ${probe9.ok}/${probe9.total}`),
+    },
+    T10: {
+      tool: TEST_TOOLS.T10.tool,
+      toolVersion: TEST_TOOLS.T10.tool_version,
+      target: TEST_TOOLS.T10.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T10,
+      runs: runOf(true, "T10", { driver: "charge-path" }),
+    },
+    T12: {
+      tool: TEST_TOOLS.T12.tool,
+      toolVersion: TEST_TOOLS.T12.tool_version,
+      target: TEST_TOOLS.T12.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T12,
+      runs: runOf(drill.restored, "T12", { drill: drill.output }),
+    },
+    T13: {
+      tool: TEST_TOOLS.T13.tool,
+      toolVersion: TEST_TOOLS.T13.tool_version,
+      target: TEST_TOOLS.T13.target,
+      receiptRef: TEST_RECEIPT_BY_LAYER.T13,
+      runs: runOf(
+        rehearsal.calls >= 20,
+        "T13",
+        { rehearsal: { calls: rehearsal.calls, g2: rehearsal.g2, g3: rehearsal.g3 } },
+        `candidate cohort spans=${rehearsal.calls} g2=${rehearsal.g2} g3=${rehearsal.g3}`,
+      ),
+    },
+  }
 }
 
 async function lookupApprovalRef(cp: ControlPlane, incidentId: string, actionDigest: string): Promise<string | null> {
@@ -463,10 +717,24 @@ async function proposalRef(cp: ControlPlane, incidentId: string, runId: string):
   return proposal.artifactRef.content_hash
 }
 
-async function sleepMs(milliseconds: number): Promise<void> {
-  if (milliseconds > 0) {
-    await new Promise((resolve) => setTimeout(resolve, milliseconds))
-  }
+async function sleepMs(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (milliseconds <= 0) return
+  if (signal?.aborted === true) throw new Error("capture run cancelled")
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener("abort", cancel)
+      resolve()
+    }
+    const cancel = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener("abort", cancel)
+      reject(new Error("capture run cancelled"))
+    }
+    timer = setTimeout(finish, milliseconds)
+    signal?.addEventListener("abort", cancel, { once: true })
+  })
 }
 
 async function candidateHealthy(): Promise<boolean> {
@@ -534,6 +802,22 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
   const { run, facts, alert, offline, readAdapters, releaseAdapter, evidenceRunner, savedId } = options
   const runtime = await bootstrap(config)
   const cp = runtime.cp
+  const boundedRun = options.frozenEvidence !== undefined
+  const runWallClockMs = options.budgets?.run_wall_clock_ms ?? options.agent?.budgets?.run_wall_clock_ms ?? 120 * 60 * 1000
+  const runAbortController = new AbortController()
+  const abortFromCaller = (): void => runAbortController.abort()
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true })
+  if (options.signal?.aborted === true) runAbortController.abort()
+  const runTimer = boundedRun
+    ? setTimeout(() => runAbortController.abort(), runWallClockMs)
+    : undefined
+  runTimer?.unref?.()
+  let activeIncidentId: string | undefined
+  const assertRunBudget = (): void => {
+    if (runAbortController.signal.aborted) {
+      throw new Error(`rehearsal Incident Run wall-clock budget exhausted (${runWallClockMs}ms)`)
+    }
+  }
 
   const policyDraft: PolicyDraft =
     run === 1
@@ -554,12 +838,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
   const schedule = policyDraft.schedule
 
   try {
+    assertRunBudget()
     // 1. Ingest the normalized, HMAC-shaped firing trigger together with the
     //    operator-set policy (the Authority Mode and Automation Policy dials).
-    const built = await buildTrigger({ alert, state: "firing", signalValue: facts.firingRatio })
+    const built = options.frozenEvidence === undefined
+      ? await buildTrigger({ alert, state: "firing", signalValue: facts.firingRatio })
+      : { trigger: options.frozenEvidence.trigger, body: JSON.stringify(options.frozenEvidence.trigger) }
     const intake = await cp.handleTrigger(built.trigger as never, policyDraft)
     if (!intake.ok) throw new Error(intake.error.message)
     const incidentId = intake.value.incidentId
+    activeIncidentId = incidentId
     const runId = "run-1"
     console.log(`[capture] incident=${incidentId} delivery=${intake.value.deliveryResult} (${RULE_ALERT_NAME} ratio=${facts.firingRatio.toFixed(3)})`)
 
@@ -569,6 +857,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const policyVersion = await cp.currentPolicyVersion(incidentId)
 
     const issueLease = async (stage: string): Promise<StageLease> => {
+      assertRunBudget()
       const issued = await cp.leases.issueRunLease({
         incidentId,
         runId,
@@ -603,10 +892,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       actorKind: "orchestrator",
       toolClass: "detect",
     }
+    // The end-of-run Orchestrator is bound to the currently active stage
+    // lease. Keep the service closure mutable because the capture advances
+    // through stages before the fresh Orchestrator session is started.
+    let orchestratorLease: StageLease = detectLease
 
-    // 3. Build the evidence from the real recorded rows.
-    const ids = buildEvidence(incidentId, facts)
-    const revisionId = hashOf({ incident: incidentId, revision: 1, items: ids.items.map((item) => item.id) })
+    // 3. Build the Evidence Bundle. Rehearsals use the verified immutable
+    // saved revision verbatim; live captures construct it from collected rows.
+    const ids = options.frozenEvidence?.evidenceIds ?? buildEvidence(incidentId, facts)
+    const revisionId = options.frozenEvidence?.evidenceSet.revision_id ??
+      hashOf({ incident: incidentId, revision: 1, items: ids.items.map((item) => item.id) })
     const bundle: EvidenceBundle = {
       revisionId,
       items: ids.items,
@@ -723,8 +1018,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       snapshotDir: `/tmp/opencode/sih-capture-snapshot-${run}`,
       evidenceRevisionId: revisionId,
       skillsRoot: SKILLS_ROOT,
-      toolCatalogVersion: "tool-catalog@1.0",
-      budgets: DEMO_BUDGETS,
+      toolCatalogVersion: ORCHESTRATOR_TOOL_CATALOG_REVISION,
+      budgets: options.frozenEvidence === undefined
+        ? DEMO_BUDGETS
+        : { ...REHEARSAL_BUDGETS, wallTimeMs: options.budgets?.run_wall_clock_ms ?? REHEARSAL_BUDGETS.wallTimeMs },
       allowedModels: {
         participant: ["stub-participant-1", "stub-participant-2"],
         judge: ["stub-judge"],
@@ -737,14 +1034,206 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const cpClient = controlPlaneClientAdapter(cp)
     const readBroker = new ReadBroker(cpClient, readAdapters)
     const hypotheses = buildHypotheses(incidentId, runId, ids, facts)
-    const gateway = new ModelGateway(cpClient, structuredProvider(incidentId, runId, revisionId, hypotheses))
+    const realAgent = options.agents === "real" ? options.agent : null
+    if (realAgent === undefined) {
+      throw new Error("--agents=real needs the agent provider/model configuration")
+    }
+    const agentBudgets = options.budgets ?? realAgent?.budgets ?? {
+      model_turns: 20,
+      non_terminal_tool_calls: 32,
+      session_wall_clock_ms: 12 * 60_000,
+      run_wall_clock_ms: 120 * 60_000,
+    }
+    // A rehearsal schedules one bounded work unit per workflow stage. Split
+    // the approved aggregate reservation into six stage slices plus headroom
+    // for elapsed wall clock and cancellation, so the first request does not
+    // claim the entire 120-minute Incident Run budget.
+    const schedulerBudgetSlices = 8
+    const schedulerWorkBudget = {
+      model_turns: Math.max(1, Math.floor(agentBudgets.model_turns / schedulerBudgetSlices)),
+      non_terminal_tool_calls: Math.max(1, Math.floor(agentBudgets.non_terminal_tool_calls / schedulerBudgetSlices)),
+      session_wall_clock_ms: Math.max(1, Math.floor(agentBudgets.session_wall_clock_ms / schedulerBudgetSlices)),
+      run_wall_clock_ms: Math.max(1, Math.floor(agentBudgets.run_wall_clock_ms / schedulerBudgetSlices)),
+    }
+    const deterministic = realAgent?.provider === "deterministic"
+    const gatewayProvider = deterministic
+      ? deterministicStreamingProvider({
+          incidentId,
+          runId,
+          revisionId: revisionId as HashString,
+          hypotheses,
+          evidenceIds: ids,
+          seed: facts.seed,
+          requestBudget: schedulerWorkBudget,
+        })
+      : realAgent?.streaming ?? piAiStreamingProvider
+    const gatewayProviderName = deterministic ? "opencode-go" : realAgent?.provider
+    const gateway = realAgent === null
+      ? new ModelGateway(cpClient, structuredProvider(incidentId, runId, revisionId, hypotheses))
+      : new ModelGateway(
+          cpClient,
+          stubProvider,
+          gatewayProvider,
+          deterministic || realAgent.streaming !== undefined ? undefined : process.env.OPENCODE_API_KEY,
+        )
+    const orchestratorService = realAgent === null
+      ? undefined
+      : {
+          async inspectState() {
+            const result = await cp.inspectOrchestratorState(incidentId, orchestratorLease.token, {
+              leaseId: orchestratorLease.leaseId,
+              incidentId,
+              runId,
+              attempt: 1,
+              stage: orchestratorLease.stage,
+              actorId: orchestratorLease.actorId,
+              actorKind: orchestratorLease.actorKind,
+              toolClass: orchestratorLease.toolClass,
+            })
+            if (!result.ok) throw new Error(result.error.message)
+            return result.value
+          },
+          async requestWork(request: OrchestratorWorkRequest) {
+            const result = await cp.requestOrchestratorWork(incidentId, orchestratorLease.token, {
+              leaseId: orchestratorLease.leaseId,
+              incidentId,
+              runId,
+              attempt: 1,
+              stage: orchestratorLease.stage,
+              actorId: orchestratorLease.actorId,
+              actorKind: orchestratorLease.actorKind,
+              toolClass: orchestratorLease.toolClass,
+            }, request)
+            if (result.ok) return result.value
+            return {
+              status: "rejected" as const,
+              request_id: request.request_id,
+              work_id: request.work_id,
+              code: result.error.code,
+              reason: result.error.message,
+            }
+          },
+          async revokeDependentWork() {
+            await cp.revokeOrchestratorWork(incidentId, runId)
+          },
+        }
     const skills = await loadSkillTree(SKILLS_ROOT)
+    const kit = realAgent === null
+      ? null
+      : new RealAgentKit({
+          gateway,
+          model: { provider: gatewayProviderName ?? realAgent.provider, id: realAgent.model },
+          reasoning: realAgent.reasoning,
+          readBroker,
+          incidentId,
+          runId,
+          attempt: 1,
+          perspectives: realAgent.perspectives,
+          seeds: [{ id: facts.seed, digest: facts.seedDiffHash }],
+          toolCatalogVersion: ORCHESTRATOR_TOOL_CATALOG_REVISION,
+          policyVersion,
+          skillTreeDigest: worker.skillsDigest,
+          piAgentCoreVersion: installedVersion("pi-agent-core"),
+          piAiVersion: installedVersion("pi-ai"),
+          budgets: agentBudgets,
+          limits: {
+            maxModelTurns: agentBudgets.model_turns,
+            maxNonTerminalToolCalls: agentBudgets.non_terminal_tool_calls,
+            maxDurationMs: agentBudgets.session_wall_clock_ms,
+          },
+          signal: boundedRun || options.signal !== undefined ? runAbortController.signal : undefined,
+          schemaVersions: {
+            "remediation-draft": "1.0",
+            "implemented-diff": "1.0",
+            "review-report": "1.0",
+            "test-report": "1.0",
+            "orchestrator-report": "1.0",
+            "capture-manifest": "1.1",
+            "fusion-participant-output": "1.0",
+            "fusion-judge-output": "1.0",
+            "fusion-synthesizer-output": "1.0",
+            "fusion-run-artifact": "1.0",
+            "agent-run-artifact": "1.0",
+            "journal-event": "1.1",
+            "orchestrator-work-request": "1.0",
+            "orchestrator-work-result": "1.0",
+            "orchestrator-lifecycle": "1.0",
+          },
+          scenario: `payment charge failure (${facts.seed})`,
+          mode: options.mode ?? "full-capture",
+          providerClass: realAgent.providerClass,
+          manifestProvider: realAgent.provider,
+          orchestrator: orchestratorService,
+        })
+
+    const scheduledWorkIds = new Map<OrchestratorWorkRequest["stage"], string[]>()
+    const claimsFor = (lease: StageLease) => ({
+      leaseId: lease.leaseId,
+      incidentId: lease.incidentId,
+      runId: lease.runId,
+      attempt: lease.attempt,
+      stage: lease.stage,
+      actorId: lease.actorId,
+      actorKind: lease.actorKind,
+      toolClass: lease.toolClass,
+    })
+    const scheduleStageWork = async (
+      stage: OrchestratorWorkRequest["stage"],
+      lease: StageLease,
+      proposals: ControlPlaneProposals,
+      stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string },
+      runContext: string,
+    ): Promise<string[]> => {
+      if (kit === null) return []
+      orchestratorLease = lease
+      kit.bindStage(proposals, lease)
+      const before = await cp.inspectOrchestratorState(incidentId, lease.token, claimsFor(lease))
+      if (!before.ok) throw new Error(before.error.message)
+      await kit.runOrchestrator({
+        incidentId,
+        runId,
+        attempt: 1,
+        sessionId: `scheduler-${stage}`,
+        stageOutcomes,
+        runContext: [
+          runContext,
+          `Approved per-stage work budget: ${JSON.stringify(schedulerWorkBudget)}`,
+        ].join("\n"),
+      })
+      const after = await cp.inspectOrchestratorState(incidentId, lease.token, claimsFor(lease))
+      if (!after.ok) throw new Error(after.error.message)
+      const prior = new Set(before.value.admitted_work_ids)
+      const admitted = after.value.admitted_work_ids.filter((workId) => !prior.has(workId))
+      if (admitted.length === 0) throw new Error(`Orchestrator did not admit eligible ${stage} work`)
+      scheduledWorkIds.set(stage, admitted)
+      console.log(`[capture] orchestrator admitted ${stage} work: ${admitted.join(", ")}`)
+      return admitted
+    }
+    const completeStageWork = async (
+      stage: OrchestratorWorkRequest["stage"],
+      lease: StageLease,
+      artifactRefs: Array<{ schema_id: string; schema_version: string; content_hash: string }>,
+    ): Promise<void> => {
+      if (kit === null) return
+      for (const workId of scheduledWorkIds.get(stage) ?? []) {
+        const completed = await cp.completeOrchestratorWork(incidentId, lease.token, claimsFor(lease), workId, artifactRefs)
+        if (!completed.ok) throw new Error(`scheduler work ${workId} could not be completed: ${completed.error.message}`)
+      }
+    }
 
     // 6. Detect: bounded real Read Broker verification reads, then the Brief.
+    const detectProposals = inProcessProposals(cp, detectLease)
+    await scheduleStageWork(
+      "detect",
+      detectLease,
+      detectProposals,
+      { detect: "pending", diagnose: "pending", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is inspecting Detect and requesting its eligible work before dependent stages are dispatched.",
+    )
     const detectOrchestrator = new PiOrchestratorExtension(
       {
         runtime: worker,
-        proposals: inProcessProposals(cp, detectLease),
+        proposals: detectProposals,
         gateway,
         lease: detectLease,
         evidence: bundle,
@@ -753,12 +1242,45 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       skills,
       "detect",
     )
-    const detect = await detectOrchestrator.driveDetect({
+    // The Detect facts are the deterministic source for the Incident Brief,
+    // the Diagnose Shared Starting Context, and the exact diagnosis task.
+    const incidentFacts = {
       symptom: "every valid charge fails in the payment service",
-      severity: "critical",
-      scope: { tenant_id: TENANT_ID, deployment_environment_name: ENVIRONMENT, service_name: SERVICE_NAME },
+      severity: "critical" as const,
+      scope: {
+        tenant_id: TENANT_ID,
+        deployment_environment_name: ENVIRONMENT,
+        service_name: SERVICE_NAME,
+      },
       serviceTopology: "checkout -> payment (gRPC)",
-      knownLimits: "reduced Compose profile; the charge driver stands in for storefront traffic",
+      knownLimits:
+        "reduced Compose profile; the charge driver stands in for storefront traffic",
+    }
+    const incidentBrief: IncidentBrief = options.frozenEvidence === undefined
+      ? {
+          schema_version: "1.0",
+          incident_id: incidentId,
+          run_id: runId,
+          attempt: 1,
+          severity: incidentFacts.severity,
+          scope: incidentFacts.scope,
+          symptom: incidentFacts.symptom,
+          initial_evidence_item_ids: [ids.metricId],
+          service_topology: incidentFacts.serviceTopology,
+          known_limits: incidentFacts.knownLimits,
+          policy_version: policyVersion,
+          sealed_at: new Date().toISOString(),
+        }
+      : {
+          ...options.frozenEvidence.incidentBrief,
+          incident_id: incidentId,
+          run_id: runId,
+          attempt: 1,
+          policy_version: policyVersion,
+          sealed_at: new Date().toISOString(),
+        }
+    const detect = await detectOrchestrator.driveDetect({
+      ...incidentFacts,
       policyVersion,
       verificationQueries: [
         { backend: "prometheus", connection_id: "astronomy-shop-local", query: "payment error ratio", resource_type: "metric" },
@@ -766,11 +1288,40 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       ],
     })
     console.log(`[capture] detect sealed incident-brief ${detect.detail}`)
+    if (kit !== null) {
+      const briefRef = cp.sealedArtifacts(incidentId, runId).find(
+        (artifact) => artifact.artifactRef.schema_id === "incident-brief",
+      )?.artifactRef
+      if (briefRef !== undefined) {
+        await completeStageWork("detect", detectLease, [briefRef])
+      }
+    }
 
     // 7. Diagnose: one Fusion round with two deterministic stub participants,
     //    the real deterministic Hypothesis gate, and sealed fusion artifacts.
     const diagnoseLease = await issueLease("diagnose")
     const diagnoseProposals = inProcessProposals(cp, diagnoseLease)
+    await diagnoseProposals.sealArtifact({
+      schemaId: "evidence-set",
+      schemaVersion: "1.0",
+      payload: options.frozenEvidence?.evidenceSet ?? {
+        schema_version: "1.0",
+        revision_id: revisionId,
+        revision_number: 1,
+        incident_id: incidentId,
+        pinned_at: new Date().toISOString(),
+        item_ids: ids.items.map((item) => item.id),
+        items: ids.items,
+      },
+      producer: { skill: "sih-orchestrator", skill_version: "1.0" },
+    })
+    await scheduleStageWork(
+      "diagnose",
+      diagnoseLease,
+      diagnoseProposals,
+      { detect: "completed", diagnose: "pending", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Diagnose only after Detect and its sealed Incident Brief are complete.",
+    )
     const diagnoseOrchestrator = new PiOrchestratorExtension(
       {
         runtime: worker,
@@ -783,23 +1334,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       skills,
       "diagnose",
     )
-    await diagnoseProposals.sealArtifact({
-      schemaId: "evidence-set",
-      schemaVersion: "1.0",
-      payload: {
-        schema_version: "1.0",
-        revision_id: revisionId,
-        revision_number: 1,
-        incident_id: incidentId,
-        pinned_at: new Date().toISOString(),
-        item_ids: ids.items.map((item) => item.id),
-        items: ids.items,
-      },
-      producer: { skill: "sih-orchestrator", skill_version: "1.0" },
-    })
 
     const diagnose = await diagnoseOrchestrator.driveDiagnose({
-      task: "Diagnose the payment charge failure from the Evidence Set revision R_1.",
+      task: `Diagnose the ${incidentFacts.symptom} from the pinned Evidence Set revision ${revisionId}.`,
+      incidentBrief,
       roundCap: 3,
       demoProfile: true,
       fusionConfig: {
@@ -811,6 +1349,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         synthesizerModel: "stub-synthesizer",
       },
       remediationDisposition: "allowed",
+      runFusionRound:
+        kit === null
+          ? undefined
+          : async (hook) => kit.runFusionRound(hook),
     })
     console.log(`[capture] diagnose sealed diagnosis-report ${diagnose.detail}`)
     const round = diagnoseOrchestrator.fusionRounds[0]
@@ -818,67 +1360,98 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       `[capture] fusion round=${round?.round} valid=${round?.valid} participants=${round?.participantRuns.map((participant) => (participant.wellFormed ? "ok" : "failed")).join(",")}`,
     )
 
+    // Seal the Fusion Run Artifact for every recorded round. The orchestrator
+    // reruns invalid rounds; each round's artifact (including failed or
+    // aborted ones) persists for inspection and is excluded from later model
+    // context by contract (`exclude_from_context: true`).
+    for (const fusionRound of diagnoseOrchestrator.fusionRounds) {
+      await diagnoseProposals.sealArtifact({
+        schemaId: "fusion-run-artifact",
+        schemaVersion: "1.0",
+        payload: fusionRunArtifactWire(fusionRound.artifact),
+        producer: { skill: "sih-fusion", skill_version: "1.0" },
+      })
+    }
+
     // Seal the Fusion role outputs (participants, Judge, Synthesizer) as
     // inspectable artifacts. The Synthesizer output is the durable input.
+    // Real-agent rounds sealed them through their terminal tools already.
     const synth = round?.synthesizer?.output
     if (synth === undefined) {
       throw new Error("fusion round produced no synthesizer output")
     }
-    await diagnoseProposals.sealArtifact({
-      schemaId: "fusion-synthesizer-output",
-      schemaVersion: "1.0",
-      payload: {
-        schema_version: "1.0",
-        synthesizer_id: "fusion-synthesizer-s1",
-        revision_id: revisionId,
-        ranked_hypotheses: synth.ranked_hypotheses,
-        contradictions: synth.contradictions ?? [],
-        gaps: synth.gaps ?? [],
-        next_actions: synth.next_actions ?? [],
-        fusion_meta: synth.fusion_meta,
-        completed_at: synth.completed_at ?? new Date().toISOString(),
-      },
-      producer: { skill: "sih-fusion-synthesizer", skill_version: "1.0" },
-    })
-    for (const participant of round?.participantRuns ?? []) {
-      if (participant.output === undefined) continue
+    if (kit !== null) {
+      console.log(`[capture] diagnose: real fusion sessions sealed the role artifacts`)
+    } else {
       await diagnoseProposals.sealArtifact({
-        schemaId: "fusion-participant-output",
+        schemaId: "fusion-synthesizer-output",
         schemaVersion: "1.0",
         payload: {
           schema_version: "1.0",
-          participant_id: participant.participantId,
+          synthesizer_id: "fusion-synthesizer-s1",
           revision_id: revisionId,
-          hypotheses: participant.output.hypotheses,
-          stated_objections: participant.output.stated_objections ?? [],
-          completed_at: participant.output.completed_at ?? new Date().toISOString(),
+          ranked_hypotheses: synth.ranked_hypotheses,
+          contradictions: synth.contradictions ?? [],
+          gaps: synth.gaps ?? [],
+          next_actions: synth.next_actions ?? [],
+          fusion_meta: synth.fusion_meta,
+          completed_at: synth.completed_at ?? new Date().toISOString(),
         },
-        producer: { skill: "sih-fusion-participant", skill_version: "1.0" },
+        producer: { skill: "sih-fusion-synthesizer", skill_version: "1.0" },
       })
-    }
-    if (round?.judge?.output !== undefined) {
-      await diagnoseProposals.sealArtifact({
-        schemaId: "fusion-judge-output",
-        schemaVersion: "1.0",
-        payload: {
-          schema_version: "1.0",
-          judge_id: "fusion-judge-j1",
-          revision_id: revisionId,
-          agreements: round.judge.output.agreements ?? [],
-          contradictions: round.judge.output.contradictions ?? [],
-          blind_spots: round.judge.output.blind_spots ?? [],
-          unique_findings: round.judge.output.unique_findings ?? [],
-          citation_audit: round.judge.output.citation_audit ?? [],
-          completed_at: round.judge.output.completed_at ?? new Date().toISOString(),
-        },
-        producer: { skill: "sih-fusion-judge", skill_version: "1.0" },
-      })
+      for (const participant of round?.participantRuns ?? []) {
+        if (participant.output === undefined) continue
+        await diagnoseProposals.sealArtifact({
+          schemaId: "fusion-participant-output",
+          schemaVersion: "1.0",
+          payload: {
+            schema_version: "1.0",
+            participant_id: participant.participantId,
+            revision_id: revisionId,
+            hypotheses: participant.output.hypotheses,
+            stated_objections: participant.output.stated_objections ?? [],
+            completed_at: participant.output.completed_at ?? new Date().toISOString(),
+          },
+          producer: { skill: "sih-fusion-participant", skill_version: "1.0" },
+        })
+      }
+      if (round?.judge?.output !== undefined) {
+        await diagnoseProposals.sealArtifact({
+          schemaId: "fusion-judge-output",
+          schemaVersion: "1.0",
+          payload: {
+            schema_version: "1.0",
+            judge_id: "fusion-judge-j1",
+            revision_id: revisionId,
+            agreements: round.judge.output.agreements ?? [],
+            contradictions: round.judge.output.contradictions ?? [],
+            blind_spots: round.judge.output.blind_spots ?? [],
+            unique_findings: round.judge.output.unique_findings ?? [],
+            citation_audit: round.judge.output.citation_audit ?? [],
+            completed_at: round.judge.output.completed_at ?? new Date().toISOString(),
+          },
+          producer: { skill: "sih-fusion-judge", skill_version: "1.0" },
+        })
+      }
     }
 
-    // 8. Repair: deterministic planner/implementer, deterministic risk class,
-    //    PR-shaped record, Recovery Point.
+    const diagnosisReportRef = [...cp.sealedArtifacts(incidentId, runId)]
+      .reverse()
+      .find((artifact) => artifact.artifactRef.schema_id === "diagnosis-report")?.artifactRef
+    if (diagnosisReportRef === undefined) throw new Error("diagnosis report was not sealed")
+    await completeStageWork("diagnose", diagnoseLease, [diagnosisReportRef])
+
+    // 8. Repair: planner/implementer (deterministic fixture or real Pi role
+    //    sessions), deterministic risk class, PR-shaped record, Recovery Point.
     const repairLease = await issueLease("repair")
     const repairProposals = inProcessProposals(cp, repairLease)
+    await scheduleStageWork(
+      "repair",
+      repairLease,
+      repairProposals,
+      { detect: "completed", diagnose: "completed", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Repair only after the completed Diagnosis Report is admitted as a prerequisite.",
+    )
     const recoveryPointPayload = {
       schema_version: "1.0",
       recovery_point_id: "recovery-point-card-type",
@@ -914,6 +1487,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       "repair",
     )
     const baseRef = hashOf({ repo: "demo-repo", commit: facts.seed, cardJs: "seeded-source" })
+    // The accepted Remediation the Verify reviewers consume, from the real
+    // repair round's sealed planner draft.
+    let acceptedRemediationText: string | undefined
     const repair = await repairOrchestrator.driveRepair({
       acceptedHypothesis: hypotheses.h1,
       disposition: "allowed",
@@ -940,11 +1516,42 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       },
       changedFiles: ["src/payment/card.js"],
       changedSurfaces: ["src/payment/card.js"],
-      runPlanner: async () => plannerDraftText(ids),
-      runImplementer: async () => implementerDiffText(),
+      runPlanner:
+        kit === null ? async () => plannerDraftText(ids) : undefined,
+      runImplementer:
+        kit === null ? async () => implementerDiffText() : undefined,
+      runRepair:
+        kit === null
+          ? undefined
+          : async (round) => {
+              const result = await kit.runRepair({
+                ...round,
+                revisionId,
+                acceptedHypothesis: JSON.stringify(round.acceptedHypothesis),
+                changeSurfacePolicy:
+                  "only src/payment/card.js may change; one-line card-type clause restoration",
+                recoveryPointSummary:
+                  "recovery-point-card-type restores the compose project file hash, the seeded image digest, and the flagd defaults",
+                declaredSurfaces: round.changedSurfaces,
+                allowedChangedFiles: round.changedFiles,
+                baseFiles: new Map(Object.entries(options.agentSeedFiles ?? {})),
+              })
+              acceptedRemediationText =
+                result.planner?.draft === undefined
+                  ? undefined
+                  : JSON.stringify(result.planner.draft)
+              return result
+            },
     })
-    const candidateHash = repair.detail
+    // The Orchestrator computed the candidate hash deterministically; the
+    // detail is the content hash the gate and reports bind to.
+    const candidateHash = repair.detail as HashString
     console.log(`[capture] repair sealed remediation-proposal candidate=${candidateHash}`)
+    const remediationProposalRef = [...cp.sealedArtifacts(incidentId, runId)]
+      .reverse()
+      .find((artifact) => artifact.artifactRef.schema_id === "remediation-proposal")?.artifactRef
+    if (remediationProposalRef === undefined) throw new Error("remediation proposal was not sealed")
+    await completeStageWork("repair", repairLease, [remediationProposalRef])
 
     const repairEnv: ReceiptEnv = { incidentId, runId, leaseId: repairLease.leaseId, stage: "repair", candidateHash }
     const prReceipt = actionReceipt(repairEnv, {
@@ -967,6 +1574,13 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     // 9. Verify: real test runs, receipts, review/test reports, deterministic verdict.
     const verifyLease = await issueLease("verify")
     const verifyProposals = inProcessProposals(cp, verifyLease)
+    await scheduleStageWork(
+      "verify",
+      verifyLease,
+      verifyProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Verify only after the accepted remediation proposal is sealed.",
+    )
     await verifyProposals.stageCommand({ kind: "enter-stage", stage: "verify" })
     await verifyProposals.stageCommand({ kind: "stage-status", stage: "verify", to: "in-progress" })
 
@@ -1114,41 +1728,114 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await releaseAdapter.stopCandidate()
     console.log(`[capture] verify: isolated env checks done (T4=${probe4.ok}/${probe4.total}, T9=${probe9.ok}/${probe9.total}, T13 spans=${rehearsal.calls}, T12 ${drill.restored ? "ok" : "failed"})`)
 
-    // Seal the review and test reports bound to the candidate hash.
-    const reviewReports = buildReviewReports({
-      incidentId,
-      runId,
-      candidateHash,
-      seed: facts.seed,
-      recoveryPointHash,
-      diffHash: hashOf({ base: baseRef, diff: implementerDiffText() }),
-      baseRef,
-      metricId: ids.metricId,
-      r1Major: run === 2,
-    })
-    const testReports = buildTestReports({
-      incidentId,
-      runId,
-      candidateHash,
-      run2: run === 2,
-      t5Selection,
-      runsByLayer: {},
-    })
-    for (const report of reviewReports) {
-      await verifyProposals.sealArtifact({
-        schemaId: "review-report",
-        schemaVersion: "1.0",
-        payload: report as never,
-        producer: { skill: REVIEW_SKILL_BY_ROLE[report.role] ?? "sih-review", skill_version: "1.0" },
+    // Seal the review and test reports bound to the candidate hash. The
+    // deterministic applicability resolver alone selects which review roles
+    // and test layers run; non-applicable roles never run and never submit.
+    const diffText = kit === null ? implementerDiffText() : kit.implementerDiffText()
+    const applicableReviewRoles = applicability.value.required.filter((code) => code.startsWith("R"))
+    const applicableTestLayers = [
+      ...new Set([
+        ...applicability.value.required.filter((code) => code.startsWith("T")),
+        ...Object.keys(applicability.value.triggered).filter((code) => code.startsWith("T")),
+      ]),
+    ].sort()
+    console.log(`[capture] verify applicable roles: reviews=${applicableReviewRoles.join(",")} tests=${applicableTestLayers.join(",")}`)
+
+    let reviewReports: ReviewReport[] = []
+    let testReports: TestReport[] = []
+    if (kit === null) {
+      // Fixture path only: the canned builders stay available as explicit
+      // offline test fixtures and are never used by a real-agent capture.
+      reviewReports = buildReviewReports({
+        incidentId,
+        runId,
+        candidateHash,
+        seed: facts.seed,
+        recoveryPointHash,
+        diffHash: hashOf({ base: baseRef, diff: diffText }),
+        baseRef,
+        metricId: ids.metricId,
+        r1Major: run === 2,
       })
-    }
-    for (const report of testReports) {
-      await verifyProposals.sealArtifact({
-        schemaId: "test-report",
-        schemaVersion: "1.0",
-        payload: report as never,
-        producer: { skill: TEST_SKILL_BY_LAYER[report.layer] ?? "sih-test", skill_version: "1.0" },
+      testReports = buildTestReports({
+        incidentId,
+        runId,
+        candidateHash,
+        run2: run === 2,
+        t5Selection,
+        runsByLayer: {},
       })
+      for (const report of reviewReports) {
+        await verifyProposals.sealArtifact({
+          schemaId: "review-report",
+          schemaVersion: "1.0",
+          payload: report as never,
+          producer: { skill: REVIEW_SKILL_BY_ROLE[report.role] ?? "sih-review", skill_version: "1.0" },
+        })
+      }
+      for (const report of testReports) {
+        await verifyProposals.sealArtifact({
+          schemaId: "test-report",
+          schemaVersion: "1.0",
+          payload: report as never,
+          producer: { skill: TEST_SKILL_BY_LAYER[report.layer] ?? "sih-test", skill_version: "1.0" },
+        })
+      }
+    } else {
+      // Real-agent path: the resolver-selected roles run as fresh sessions,
+      // and the deterministic receipts own every test outcome.
+      const testReceipts: Record<string, AssignedTestReceipt> = {}
+      for (const [layer, entry] of Object.entries(realTestRunsByLayer({
+        run,
+        candidateBuild,
+        t3Run,
+        t5Run,
+        probe4,
+        probe9,
+        rehearsal,
+        drill,
+        t5Selection,
+      }))) {
+        testReceipts[layer] = { layer: layer as TestLayerCode, ...entry }
+      }
+      const verifyResult = await kit.runVerify({
+        incidentId,
+        runId,
+        attempt: 1,
+        candidateHash,
+        revisionId,
+        hypothesis: hypotheses.h1.causal_claim.defect,
+        diffText,
+        changedFiles: ["src/payment/card.js"],
+        recoveryPointHash,
+        required: applicability.value.required,
+        triggered: applicability.value.triggered,
+        t5Selection,
+        acceptedRemediation: acceptedRemediationText,
+        inputRefs: [ids.metricId, ids.codeLocationId, RECEIPT_IDS.pr],
+        testReceipts,
+      })
+      if (!verifyResult.valid) {
+        // A required review or test role is missing, malformed, timed out,
+        // cancelled, or failed: stop Verify safely and keep every session
+        // record inspectable. Never a canned replacement.
+        console.log(`[capture] verify: invalid round (${verifyResult.failure?.role ?? "unknown"}); failing the run`)
+        return await failVerifyAndReturn({
+          run,
+          savedId,
+          incidentId,
+          runId,
+          candidateHash,
+          cp,
+          verifyProposals,
+          kit,
+          mode: options.mode ?? "full-capture",
+          runtime,
+          stageReason: verifyResult.failure?.message ?? "a required Verify role failed",
+        })
+      }
+      reviewReports = verifyResult.reviews
+      testReports = verifyResult.tests
     }
 
     // Deterministic verdict: the Control Plane computes it; no model votes.
@@ -1196,35 +1883,20 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         },
         producer: { skill: "sih-orchestrator", skill_version: "1.0" },
       })
-      await verifyProposals.stageCommand({
-        kind: "stage-status",
-        stage: "verify",
-        to: "failed",
-        artifact_ref: verificationReportRef,
-        candidate_hash: candidateHash,
-      })
-      await verifyProposals.failRun("verification-failed")
-      console.log(`[capture] run failed: verification-failed (no Release record, no production Watch Report)`)
-
-      const finalEvents = cp.journal.events(incidentId)
-      const report: CaptureReport = {
+      return await failVerifyAndReturn({
         run,
         savedId,
         incidentId,
         runId,
-        finalSequence: finalEvents.at(-1)?.sequence ?? 0,
-        finalRunState: "failed",
-        finalIncidentState: "open",
-        outcome: null,
-        failureReason: "verification-failed",
         candidateHash,
-        gateVerdicts: cp.gateEvaluations(incidentId, runId).map((gate) => `${gate.gate}:${gate.evaluation.verdict}`),
-        receiptIds: cp.receipts(incidentId, runId).map((receipt) => receipt.receipt_id),
-        artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
-        stageRecords: cp.journal.state(incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
-      }
-      await runtime.store.close()
-      return report
+        cp,
+        verifyProposals,
+        kit,
+        mode: options.mode ?? "full-capture",
+        runtime,
+        artifactRef: verificationReportRef,
+        completeWork: async () => completeStageWork("verify", verifyLease, [verificationReportRef]),
+      })
     }
 
     // Run 1 continues: complete Verify, then Release.
@@ -1235,12 +1907,20 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       artifact_ref: verificationReportRef,
       candidate_hash: candidateHash,
     })
+    await completeStageWork("verify", verifyLease, [verificationReportRef])
     console.log(`[capture] verify completed with pass verdict`)
 
     // 10. Release: frozen Watch plan, hybrid policy decision, operator approval,
     //     the eight Release Gate facts, permit, candidate deploy.
     const releaseLease = await issueLease("release")
     const releaseProposals = inProcessProposals(cp, releaseLease)
+    await scheduleStageWork(
+      "release",
+      releaseLease,
+      releaseProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "completed" },
+      "The bounded Orchestrator scheduler is requesting Release only after the passing verification report is sealed.",
+    )
     await releaseProposals.stageCommand({ kind: "enter-stage", stage: "release" })
     await releaseProposals.stageCommand({ kind: "stage-status", stage: "release", to: "in-progress" })
 
@@ -1455,12 +2135,20 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       candidate_hash: candidateHash,
       artifact_ref: releaseRecordSealed.artifact_ref,
     })
+    await completeStageWork("release", releaseLease, [releaseRecordSealed.artifact_ref])
     console.log(`[capture] release completed (release record sealed, permit ${permit.permitId})`)
 
     // 11. Watch: stage 1 probe ring (20/20 in three windows), stage 2 service
     //     swap, G1-G6 across three windows, confirmation window.
     const watchLease = await issueLease("watch")
     const watchProposals = inProcessProposals(cp, watchLease)
+    await scheduleStageWork(
+      "watch",
+      watchLease,
+      watchProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "completed" },
+      "The bounded Orchestrator scheduler is requesting Watch only after the Release record is sealed.",
+    )
     await watchProposals.stageCommand({ kind: "enter-stage", stage: "watch" })
     await watchProposals.stageCommand({ kind: "stage-status", stage: "watch", to: "in-progress" })
     const watchEnv: ReceiptEnv = { incidentId, runId, leaseId: watchLease.leaseId, stage: "watch", candidateHash }
@@ -1485,7 +2173,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         if (Date.now() > spansDeadline) {
           throw new Error("the candidate cohort never produced span metrics")
         }
-        await sleepMs(10_000)
+        await sleepMs(10_000, runAbortController.signal)
       }
     }
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
@@ -1495,7 +2183,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       let probeOutcome = await evidenceRunner.probeCandidate(PROBES_PER_WINDOW)
       const probeDeadline = Date.now() + 90_000
       while (probeOutcome.err !== 0 && Date.now() < probeDeadline) {
-        await sleepMs(5_000)
+        await sleepMs(5_000, runAbortController.signal)
         probeOutcome = await evidenceRunner.probeCandidate(PROBES_PER_WINDOW)
       }
       await cp.recordBrokerReceipt(incidentId, runId, "watch", readReceipt(watchEnv, {
@@ -1506,11 +2194,11 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         resourceType: "probe-run",
         result: { outcome: probeOutcome.err === 0 ? "ok" : "error", data: probeOutcome, rowCount: probeOutcome.total },
       }), "read-broker")
-      await sleepMs(30_000)
+      await sleepMs(30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const rehearsal = await evidenceRunner.rehearseWatch()
-      const g1 = await candidateHealthy()
+      const g1 = offline ? true : await candidateHealthy()
       const g2ok = (rehearsal.calls ?? 0) >= 20 && (rehearsal.g2 ?? 1) < WATCH_GATES.G2.limit
       stage1Samples.push(
         watchSample({
@@ -1614,14 +2302,14 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         if (Date.now() > drainDeadline) {
           throw new Error("the live error ratio never dropped below the Watch limit after the swap")
         }
-        await sleepMs(10_000)
+        await sleepMs(10_000, runAbortController.signal)
       }
     }
 
     const stage2Samples: Record<string, unknown>[] = []
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
       const windowStart = new Date()
-      await sleepMs(30_000)
+      await sleepMs(30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -1689,14 +2377,16 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       }
       resolvedRatio = (await shop.liveErrorRatio()) ?? facts.baselineRatio
     }
-    const resolvedBuilt = await buildTrigger({ alert: resolvedAlert, state: "resolved", signalValue: resolvedRatio })
+    const resolvedBuilt = options.frozenEvidence?.resolvedTrigger === null || options.frozenEvidence?.resolvedTrigger === undefined
+      ? await buildTrigger({ alert: resolvedAlert, state: "resolved", signalValue: resolvedRatio })
+      : { trigger: options.frozenEvidence.resolvedTrigger, body: JSON.stringify(options.frozenEvidence.resolvedTrigger) }
     const resolvedIntake = await cp.handleTrigger(resolvedBuilt.trigger as never)
     if (!resolvedIntake.ok) throw new Error(resolvedIntake.error.message)
     console.log(`[capture] resolved trigger: ${resolvedIntake.value.deliveryResult} (ratio=${resolvedRatio.toFixed(3)})`)
 
     // Confirmation window: G1-G6 pass once more with no recurrence.
     const confirmationStart = new Date()
-    await sleepMs(30_000)
+    await sleepMs(30_000, runAbortController.signal)
     const confirmationEnd = new Date()
     const timeRange = { starts_at: confirmationStart.toISOString(), ends_at: confirmationEnd.toISOString() }
     const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -1739,6 +2429,24 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       to: "completed",
       artifact_ref: confirmationSealed.artifact_ref,
     })
+    await completeStageWork("watch", watchLease, [confirmationSealed.artifact_ref])
+    assertRunBudget()
+    if (kit !== null) {
+      kit.bindStage(watchProposals, watchLease)
+      await sealRunEnd(kit, {
+        incidentId,
+        runId,
+        mode: options.mode ?? "full-capture",
+        stageOutcomes: {
+          detect: "completed",
+          diagnose: "completed",
+          repair: "completed",
+          verify: "completed",
+        },
+        runContext: runEndContext(run, candidateHash, "verified-remediation"),
+      })
+      console.log(`[capture] orchestrator report + capture manifest sealed (completed run)`)
+    }
     await watchProposals.completeRun("verified-remediation")
     console.log(`[capture] run completed: verified-remediation (incident resolved)`)
 
@@ -1764,10 +2472,26 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       receiptIds: cp.receipts(incidentId, runId).map((receipt) => receipt.receipt_id),
       artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
       stageRecords: finalState?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
+      agents: kit === null ? "fixture" : "real",
+      manifestSealed: kit !== null,
+      agentRunArtifacts: cp.sealedArtifacts(incidentId).filter(
+        (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
+      ).length,
     }
+    if (runTimer !== undefined) clearTimeout(runTimer)
+    options.signal?.removeEventListener("abort", abortFromCaller)
     await runtime.store.close()
     return report
   } catch (error) {
+    if (activeIncidentId !== undefined) {
+      await cp.revokeOrchestratorWork(activeIncidentId, "run-1").catch(() => undefined)
+    }
+    if (activeIncidentId !== undefined) {
+      const failureExport = options.onFailure?.({ incidentId: activeIncidentId, runId: "run-1", cp })
+      await failureExport?.catch(() => undefined)
+    }
+    if (runTimer !== undefined) clearTimeout(runTimer)
+    options.signal?.removeEventListener("abort", abortFromCaller)
     await runtime.store.close()
     throw error
   }
@@ -1778,4 +2502,124 @@ function stageOutcome(samples: Record<string, unknown>[]): "pass" | "fail" {
   return samples.every((sample) => (sample as { outcome?: string }).outcome === "pass")
     ? "pass"
     : "fail"
+}
+
+/** The end-of-run summary the Orchestrator role session reflects on. */
+function runEndContext(
+  run: 1 | 2,
+  candidateHash: HashString,
+  outcome: string,
+): string {
+  return [
+    `Run ${run} against the ${run === 1 ? "S1" : "S2"} seeded payment service.`,
+    `Candidate ${candidateHash} is a one-line card-type restoration in src/payment/card.js.`,
+    `The run ends ${outcome}; every gate verdict and receipt is recorded in the journal.`,
+    "The capture manifest freezes the provider, model, reasoning level, skill tree digest, tool catalog revision, policy revision, perspectives, seeds, budgets, schema versions, and every role session record.",
+  ].join("\n")
+}
+
+/** Run the end-of-run Orchestrator role session and seal the capture manifest
+ * for both full captures and rehearsals. Rehearsal manifests are retained in
+ * the append-only development store but are never eligible for presentation. */
+async function sealRunEnd(
+  kit: RealAgentKit,
+  options: {
+    incidentId: string
+    runId: string
+    stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string }
+    runContext: string
+    mode: "rehearsal" | "full-capture"
+  },
+): Promise<void> {
+  await kit.runOrchestrator({
+    incidentId: options.incidentId,
+    runId: options.runId,
+    attempt: 1,
+    sessionId: "final-report",
+    stageOutcomes: options.stageOutcomes,
+    runContext: options.runContext,
+  })
+  await kit.sealManifest({
+    incidentId: options.incidentId,
+    runId: options.runId,
+    attempt: 1,
+    mode: options.mode,
+    scenario: options.runContext.split("\n")[0] ?? "payment charge failure",
+  })
+}
+
+/** The shared end of any failed Verify: mark the stage failed, run the
+ * end-of-run Orchestrator + capture manifest for real-agent runs, fail the
+ * run, and return the honest failed CaptureReport. Callers seal any extra
+ * failed-stage evidence (e.g. Run 2's failed T5 item) first. */
+async function failVerifyAndReturn(options: {
+  run: 1 | 2
+  savedId: string
+  incidentId: string
+  runId: string
+  candidateHash: HashString
+  cp: ControlPlane
+  verifyProposals: ControlPlaneProposals
+  kit: RealAgentKit | null
+  mode: "rehearsal" | "full-capture"
+  runtime: Runtime
+  /** The sealed verification report, when a deterministic verdict exists. */
+  artifactRef?: cmd.ArtifactRef
+  /** The stage-failure reason, when no verdict artifact exists. */
+  stageReason?: string
+  /** Complete admitted Verify work when a sealed failure report exists. */
+  completeWork?: () => Promise<void>
+}): Promise<CaptureReport> {
+  await options.completeWork?.()
+  await options.verifyProposals.stageCommand({
+    kind: "stage-status",
+    stage: "verify",
+    to: "failed",
+    ...(options.artifactRef === undefined
+      ? {}
+      : { artifact_ref: options.artifactRef, candidate_hash: options.candidateHash }),
+    ...(options.stageReason === undefined ? {} : { reason: options.stageReason }),
+  })
+  if (options.kit !== null) {
+    await sealRunEnd(options.kit, {
+      incidentId: options.incidentId,
+      runId: options.runId,
+      mode: options.mode,
+      stageOutcomes: {
+        detect: "completed",
+        diagnose: "completed",
+        repair: "completed",
+        verify: "failed",
+      },
+      runContext: runEndContext(options.run, options.candidateHash, "verification-failed"),
+    })
+    console.log(`[capture] orchestrator report + capture manifest sealed (failed run)`)
+  }
+  await options.verifyProposals.failRun("verification-failed")
+  console.log(`[capture] run failed: verification-failed (no Release record, no production Watch Report)`)
+
+  const finalEvents = options.cp.journal.events(options.incidentId)
+  const report: CaptureReport = {
+    run: options.run,
+    savedId: options.savedId,
+    incidentId: options.incidentId,
+    runId: options.runId,
+    finalSequence: finalEvents.at(-1)?.sequence ?? 0,
+    finalRunState: "failed",
+    finalIncidentState: "open",
+    outcome: null,
+    failureReason: "verification-failed",
+    candidateHash: options.candidateHash,
+    gateVerdicts: options.cp.gateEvaluations(options.incidentId, options.runId).map((gate) => `${gate.gate}:${gate.evaluation.verdict}`),
+    receiptIds: options.cp.receipts(options.incidentId, options.runId).map((receipt) => receipt.receipt_id),
+    artifactSchemas: options.cp.sealedArtifacts(options.incidentId).map((artifact) => artifact.artifactRef.schema_id),
+    stageRecords: options.cp.journal.state(options.incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
+    agents: options.kit === null ? "fixture" : "real",
+    manifestSealed: options.kit !== null,
+    agentRunArtifacts: options.cp.sealedArtifacts(options.incidentId).filter(
+      (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
+    ).length,
+  }
+  await options.runtime.store.close()
+  return report
 }

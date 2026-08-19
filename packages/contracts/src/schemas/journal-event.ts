@@ -1,7 +1,7 @@
 /**
  * Journal event v1, from docs/research/orchestrator-stages.md and
  * docs/research/incident-workspace.md. The append-only journal is the sole
- * source of truth for replay. Events are a discriminated union over twelve
+ * source of truth for replay. Events are a discriminated union over thirteen
  * kinds; every event carries a monotonic sequence, an idempotency key, an
  * actor, and a policy version. Wall-clock order never decides replay order:
  * sequence does.
@@ -376,10 +376,95 @@ const modelUse = variant("model_use", {
   },
 });
 
-/** The JSON Schema for the twelve-kind append-only journal event union. */
+const workRequested = variant("work_requested", {
+  required: [
+    "incident_id",
+    "run_id",
+    "attempt",
+    "request_id",
+    "work_id",
+    "stage",
+    "status",
+    "depends_on",
+    "budget",
+    "admitted_artifact_refs",
+  ],
+  properties: {
+    incident_id: { type: "string", minLength: 1 },
+    run_id: { type: "string", minLength: 1 },
+    attempt: { type: "integer", minimum: 1 },
+    request_id: { type: "string", minLength: 1 },
+    work_id: { type: "string", minLength: 1 },
+    stage: STAGE_NAME,
+    status: { enum: ["admitted", "rejected"] },
+    depends_on: { type: "array", items: { type: "string", minLength: 1 }, uniqueItems: true },
+    budget: {
+      type: "object",
+      additionalProperties: false,
+      required: ["model_turns", "non_terminal_tool_calls", "session_wall_clock_ms", "run_wall_clock_ms"],
+      properties: {
+        model_turns: { type: "integer", minimum: 1 },
+        non_terminal_tool_calls: { type: "integer", minimum: 1 },
+        session_wall_clock_ms: { type: "integer", minimum: 1 },
+        run_wall_clock_ms: { type: "integer", minimum: 1 },
+      },
+    },
+    admitted_artifact_refs: { type: "array", items: ARTIFACT_REF, uniqueItems: true },
+    code: { type: "string", minLength: 1 },
+    reason: { type: "string", minLength: 1 },
+  },
+  allOf: [
+    {
+      if: { properties: { status: { const: "rejected" } }, required: ["status"] },
+      then: {
+        required: ["code", "reason"],
+        properties: {
+          code: { type: "string", minLength: 1 },
+          reason: { type: "string", minLength: 1 },
+        },
+      },
+    },
+  ],
+});
+
+const workCompleted = variant("work_completed", {
+  required: ["incident_id", "run_id", "attempt", "work_id", "artifact_refs"],
+  properties: {
+    incident_id: { type: "string", minLength: 1 },
+    run_id: { type: "string", minLength: 1 },
+    attempt: { type: "integer", minimum: 1 },
+    work_id: { type: "string", minLength: 1 },
+    artifact_refs: { type: "array", items: ARTIFACT_REF, minItems: 1, uniqueItems: true },
+  },
+});
+
+/** The JSON Schema for the fourteen-kind append-only journal event union. */
 export const journalEventSchema = {
-  $id: "https://contracts.sih.dev/journal-event/1.0",
+  $id: "https://contracts.sih.dev/journal-event/1.1",
   $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Journal Event v1.1",
+  oneOf: [
+    triggerReceived,
+    incidentTransition,
+    runTransition,
+    stageTransition,
+    artifactSealed,
+    brokerReceiptRecorded,
+    gateEvaluated,
+    policyDecision,
+    leaseEvent,
+    approvalRecorded,
+    humanAction,
+    modelUse,
+    workRequested,
+    workCompleted,
+  ],
+} as const;
+
+/** The pre-Orchestrator journal schema retained for replaying v1.0 exports. */
+export const journalEventSchemaV1 = {
+  ...journalEventSchema,
+  $id: "https://contracts.sih.dev/journal-event/1.0",
   title: "Journal Event v1",
   oneOf: [
     triggerReceived,
@@ -405,5 +490,5 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 /** A journal event without its sequence, as produced by a command producer. */
 export type JournalCommand = DistributiveOmit<JournalEvent, "sequence">;
 
-/** The twelve journal event kinds. */
+/** The fourteen journal event kinds. */
 export type JournalEventType = JournalEvent["type"];

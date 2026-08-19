@@ -95,6 +95,39 @@ export function validateImplementerDiff(options: {
   return { diffHash: digest.value }
 }
 
+/** The changed file paths a unified diff touches, parsed deterministically
+ * from the `--- a/<path>` / `+++ b/<path>` header pairs. A content line can
+ * never masquerade as a header, and model prose is never parsed. */
+export function changedFilesFromDiff(diffText: string): string[] {
+  const files: string[] = []
+  const lines = diffText.split("\n")
+  for (let index = 0; index < lines.length; index += 1) {
+    const removed = /^--- a\/(.+)$/.exec(lines[index] ?? "")
+    const added = /^\+\+\+ b\/(.+)$/.exec(lines[index + 1] ?? "")
+    if (removed !== null && added !== null) {
+      files.push(added[1])
+    }
+  }
+  return files
+}
+
+/** Fail a change that touches a file outside the accepted Remediation
+ * scope, before Verify. Returns the changed paths for deterministic reuse. */
+export function assertDiffInScope(options: {
+  diffText: string
+  allowedPaths: readonly string[]
+}): string[] {
+  const changed = changedFilesFromDiff(options.diffText)
+  const allowed = new Set(options.allowedPaths)
+  const outOfScope = changed.filter((file) => !allowed.has(file))
+  if (outOfScope.length > 0) {
+    throw new Error(
+      `implementer diff is out of the accepted Remediation scope: ${outOfScope.join(", ")}`,
+    )
+  }
+  return changed
+}
+
 /** A barred or prohibited surface never reaches execution. */
 export function assertExecutableSurface(options: {
   actionRiskClass: "safe" | "guarded" | "barred"

@@ -13,6 +13,13 @@ import type {
   IncidentTrigger,
   JournalEvent,
   RemediationProposal,
+  OrchestratorLifecycleState,
+  OrchestratorStage,
+  OrchestratorStageState,
+  OrchestratorWorkBudget,
+  OrchestratorWorkAdmission,
+  OrchestratorWorkRequest,
+  OrchestratorWorkResult,
 } from "@sih/contracts/types"
 
 import type { ArtifactService, SealInput } from "../artifacts/artifact-service.js"
@@ -76,6 +83,11 @@ const SAFE_AUTOQUEUE_FAILURES: ReadonlySet<string> = new Set([
   "gate-failed",
 ])
 
+const ORCHESTRATOR_RUN_WALL_CLOCK_MS = 120 * 60 * 1000
+const ORCHESTRATOR_MAX_MODEL_TURNS = 20
+const ORCHESTRATOR_MAX_NON_TERMINAL_TOOL_CALLS = 32
+const ORCHESTRATOR_MAX_SESSION_WALL_CLOCK_MS = 12 * 60 * 1000
+
 export interface IntakeResult {
   incidentId: string
   deliveryResult: "incident-created" | "evidence-appended" | "duplicate-noop"
@@ -95,6 +107,11 @@ export interface GateRunResult {
 export class ControlPlane {
   private readonly policyCache = new Map<string, string>()
   private readonly related = new Map<string, string[]>()
+  /** Admission validation and its journal append must be one serialized
+   * operation so concurrent Orchestrator requests cannot both reserve the
+   * same remaining budget from a stale projection. */
+  private readonly orchestratorAdmissionChains = new Map<string, Promise<void>>()
+  private readonly cancelledOrchestratorRuns = new Set<string>()
 
   constructor(
     readonly store: Store,
@@ -264,6 +281,7 @@ export class ControlPlane {
     const run = state?.runs.find((candidate) => candidate.runId === runId)
     if (run === undefined) return err({ code: ERR.NOT_FOUND, message: "run not found" })
     if (run.state !== "queued") return err({ code: ERR.ILLEGAL_TRANSITION, message: "run is not queued" })
+    this.cancelledOrchestratorRuns.delete(`${incidentId}:${runId}`)
     const policyVersion = await this.currentPolicyVersion(incidentId)
     const policy = await this.getPolicy(incidentId)
     const issued = await this.leases.issueRunLease({
@@ -291,6 +309,405 @@ export class ControlPlane {
     await this.journal.apply(incidentId, leaseCmd)
     await this.refreshIndexFromJournal(incidentId)
     return ok({ leaseId: issued.leaseId, token: issued.token })
+  }
+
+  // ------------------------------------------------------------------
+  // Pi Orchestrator work boundary
+
+  /**
+   * Return the concise lifecycle projection exposed to a Pi Orchestrator.
+   * Scratchpad contents, model transcripts, and hidden reasoning are not part
+   * of this projection; only Control Plane state and sealed artifact refs are
+   * returned.
+   */
+  async inspectOrchestratorState(
+    incidentId: string,
+    token: string,
+    claims: LeaseClaims,
+  ): Promise<Result<OrchestratorLifecycleState, DomainError>> {
+    if (incidentId !== claims.incidentId) {
+      return err({ code: ERR.UNAUTHORIZED, message: "lease is bound to a different Incident" })
+    }
+    await this.journal.ensureLoaded(incidentId)
+    const state = this.journal.state(incidentId)
+    const run = state?.runs.find((candidate) => candidate.runId === claims.runId)
+    const verified = await this.leases.verifyRunLease(token, claims, run?.state ?? null)
+    if (!verified.ok) return verified
+    if (run === undefined) return err({ code: ERR.NOT_FOUND, message: "run not found" })
+    return ok(this.orchestratorState(incidentId, run))
+  }
+
+  /**
+   * Admit a bounded unit of work. This is intentionally a proposal API: it
+   * records the admission decision but cannot transition a stage, seal an
+   * artifact, mint a lease or permit, change a budget, or complete a run.
+   */
+  async requestOrchestratorWork(
+    incidentId: string,
+    token: string,
+    claims: LeaseClaims,
+    request: OrchestratorWorkRequest,
+  ): Promise<Result<OrchestratorWorkResult, DomainError>> {
+    return this.withOrchestratorAdmissionLock(incidentId, () =>
+      this.requestOrchestratorWorkUnlocked(incidentId, token, claims, request),
+    )
+  }
+
+  private async requestOrchestratorWorkUnlocked(
+    incidentId: string,
+    token: string,
+    claims: LeaseClaims,
+    request: OrchestratorWorkRequest,
+  ): Promise<Result<OrchestratorWorkResult, DomainError>> {
+    if (this.cancelledOrchestratorRuns.has(`${incidentId}:${claims.runId}`)) {
+      return err({ code: ERR.REVOKED_LEASE, message: "Orchestrator scheduling was cancelled for this run" })
+    }
+    if (incidentId !== claims.incidentId) {
+      return err({ code: ERR.UNAUTHORIZED, message: "lease is bound to a different Incident" })
+    }
+    await this.journal.ensureLoaded(incidentId)
+    const state = this.journal.state(incidentId)
+    const run = state?.runs.find((candidate) => candidate.runId === claims.runId)
+    const verified = await this.leases.verifyRunLease(token, claims, run?.state ?? null)
+    if (!verified.ok) return verified
+    if (run === undefined) return err({ code: ERR.NOT_FOUND, message: "run not found" })
+
+    const existing = this.journal.events(incidentId).find(
+      (event) => event.type === "work_requested" &&
+        event.run_id === claims.runId &&
+        (event.request_id === request.request_id || event.work_id === request.work_id),
+    )
+    if (existing !== undefined) {
+      return err({ code: ERR.DUPLICATE_WORK, message: `work request ${request.request_id} was already recorded` })
+    }
+
+    const invalid = this.validateWorkRequest(request, claims, run)
+    if (invalid !== null) {
+      const recorded = await this.recordWorkRequest(incidentId, claims, request, "rejected", invalid)
+      if (!recorded.ok) return err(recorded.error)
+      return ok({
+        status: "rejected",
+        request_id: request.request_id,
+        work_id: request.work_id,
+        code: invalid.code,
+        reason: invalid.message,
+      })
+    }
+
+    const lifecycle = this.orchestratorState(incidentId, run)
+    const admittedArtifacts = this.admittedArtifactsForStage(run, request.stage)
+    const policyVersion = await this.currentPolicyVersion(incidentId)
+    const recordedAt = this.clock.nowIso()
+    const applied = await this.journal.apply(
+      incidentId,
+      cmd.workRequestedCommand(
+        incidentId,
+        claims.runId,
+        request,
+        "admitted",
+        policyVersion,
+        recordedAt,
+        { admittedArtifactRefs: admittedArtifacts, actorId: claims.actorId },
+      ),
+    )
+    if (applied.kind !== "applied") {
+      return err(applied.kind === "error"
+        ? applied.error
+        : { code: ERR.DUPLICATE_WORK, message: "work request was already recorded" })
+    }
+    return ok({
+      status: "admitted",
+      request_id: request.request_id,
+      work_id: request.work_id,
+      stage: request.stage,
+      admitted_artifacts: admittedArtifacts,
+      budgets: lifecycle.budgets,
+    } satisfies OrchestratorWorkAdmission)
+  }
+
+  /** Complete an admitted work unit only after its output artifacts have
+   * already been sealed through the normal Control Plane artifact boundary.
+   * This is a Worker-side operation; the Pi Orchestrator has no completion
+   * tool and therefore cannot self-certify work. */
+  async completeOrchestratorWork(
+    incidentId: string,
+    token: string,
+    claims: LeaseClaims,
+    workId: string,
+    artifactRefs: ArtifactRef[],
+  ): Promise<Result<true, DomainError>> {
+    if (incidentId !== claims.incidentId) {
+      return err({ code: ERR.UNAUTHORIZED, message: "lease is bound to a different Incident" })
+    }
+    await this.journal.ensureLoaded(incidentId)
+    const state = this.journal.state(incidentId)
+    const run = state?.runs.find((candidate) => candidate.runId === claims.runId)
+    const verified = await this.leases.verifyRunLease(token, claims, run?.state ?? null)
+    if (!verified.ok) return verified
+    if (run === undefined) return err({ code: ERR.NOT_FOUND, message: "run not found" })
+    const admitted = this.journal.events(incidentId).find(
+      (event): event is Extract<JournalEvent, { type: "work_requested" }> =>
+        event.type === "work_requested" && event.run_id === claims.runId && event.work_id === workId && event.status === "admitted",
+    )
+    if (admitted === undefined) return err({ code: ERR.NOT_FOUND, message: `admitted work ${workId} was not found` })
+    if (admitted.attempt !== run.attempt) return err({ code: ERR.STALE_ATTEMPT, message: `work ${workId} belongs to a stale attempt` })
+    const alreadyCompleted = this.journal.events(incidentId).some(
+      (event) => event.type === "work_completed" && event.run_id === claims.runId && event.work_id === workId,
+    )
+    if (alreadyCompleted) return err({ code: ERR.DUPLICATE_WORK, message: `work ${workId} was already completed` })
+    const expectedSchemas = STAGE_ARTIFACT.get(admitted.stage as StageName) ?? []
+    if (artifactRefs.length === 0 || artifactRefs.some((reference) =>
+      !expectedSchemas.includes(reference.schema_id) ||
+      !this.sealedArtifacts(incidentId, claims.runId).some((sealed) =>
+        sealed.artifactRef.schema_id === reference.schema_id &&
+        sealed.artifactRef.schema_version === reference.schema_version &&
+        sealed.artifactRef.content_hash === reference.content_hash,
+      ))) {
+      return err({ code: ERR.PREREQUISITE_MISSING, message: "work completion requires sealed output artifacts" })
+    }
+    const policyVersion = await this.currentPolicyVersion(incidentId)
+    const applied = await this.journal.apply(
+      incidentId,
+      cmd.workCompletedCommand(incidentId, claims.runId, run.attempt, workId, artifactRefs, policyVersion, this.clock.nowIso(), claims.actorId),
+    )
+    if (applied.kind === "error") return err(applied.error)
+    if (applied.kind !== "applied") return err({ code: ERR.DUPLICATE_WORK, message: `work ${workId} was already completed` })
+    return ok(true)
+  }
+
+  /** Cancellation boundary for the orchestrator's dependent work. The
+   * Control Plane revokes active leases and permits; the model never gets a
+   * tool for doing either operation itself. */
+  async revokeOrchestratorWork(incidentId: string, runId: string): Promise<void> {
+    this.cancelledOrchestratorRuns.add(`${incidentId}:${runId}`)
+    await this.leases.revokeRunLeases(incidentId, runId)
+    await this.store.revokePermits(incidentId, runId)
+  }
+
+  private validateWorkRequest(
+    request: OrchestratorWorkRequest,
+    claims: LeaseClaims,
+    run: { attempt: number; state: string; stageRecords: Array<{ stage: string; to: string; artifactRef?: ArtifactRef }> },
+  ): DomainError | null {
+    if (request.attempt !== run.attempt) {
+      return { code: ERR.STALE_ATTEMPT, message: `request attempt ${request.attempt} does not match run attempt ${run.attempt}` }
+    }
+    if (request.stage !== claims.stage) {
+      return { code: ERR.WRONG_STAGE, message: `request stage ${request.stage} does not match lease stage ${claims.stage}` }
+    }
+    const currentStage = this.currentStage(run)
+    if (currentStage !== request.stage) {
+      return { code: ERR.WRONG_STAGE, message: `run is currently at ${currentStage ?? "no active stage"}, not ${request.stage}` }
+    }
+    const stageIndex = STAGE_ORDER.indexOf(request.stage)
+    if (stageIndex < 0) {
+      return { code: ERR.INVALID_REQUEST, message: `unknown orchestrator stage ${request.stage}` }
+    }
+    for (const prerequisite of STAGE_ORDER.slice(0, stageIndex)) {
+      const last = this.lastStageRecord(run, prerequisite)
+      if (last?.to !== "completed") {
+        return { code: ERR.PREREQUISITE_MISSING, message: `stage ${request.stage} requires completed ${prerequisite}` }
+      }
+    }
+    const completedWorkIds = new Set(
+      this.journal.events(claims.incidentId)
+        .filter((event): event is Extract<JournalEvent, { type: "work_completed" }> =>
+          event.type === "work_completed" && event.run_id === claims.runId)
+        .map((event) => event.work_id),
+    )
+    const missingDependency = request.depends_on.find((workId) => !completedWorkIds.has(workId))
+    if (missingDependency !== undefined) {
+      return { code: ERR.PREREQUISITE_MISSING, message: `work dependency ${missingDependency} has not completed with sealed artifacts` }
+    }
+    const reserved = this.admittedBudgetUsage(claims.incidentId, claims.runId)
+    if (
+      request.budget.model_turns < 1 || request.budget.model_turns > ORCHESTRATOR_MAX_MODEL_TURNS ||
+      request.budget.non_terminal_tool_calls < 1 || request.budget.non_terminal_tool_calls > ORCHESTRATOR_MAX_NON_TERMINAL_TOOL_CALLS ||
+      request.budget.session_wall_clock_ms < 1 || request.budget.session_wall_clock_ms > ORCHESTRATOR_MAX_SESSION_WALL_CLOCK_MS ||
+      request.budget.run_wall_clock_ms < 1 || request.budget.run_wall_clock_ms > ORCHESTRATOR_RUN_WALL_CLOCK_MS ||
+      request.budget.model_turns > ORCHESTRATOR_MAX_MODEL_TURNS - reserved.model_turns ||
+      request.budget.non_terminal_tool_calls > ORCHESTRATOR_MAX_NON_TERMINAL_TOOL_CALLS - reserved.non_terminal_tool_calls ||
+      request.budget.session_wall_clock_ms > ORCHESTRATOR_MAX_SESSION_WALL_CLOCK_MS - reserved.session_wall_clock_ms
+    ) {
+      return { code: ERR.BUDGET_EXCEEDED, message: "requested work exceeds the bounded Orchestrator budget" }
+    }
+    const runStartedAt = this.runStartedAt(claims.incidentId, claims.runId)
+    const elapsed = Math.max(0, this.clock.now().getTime() - runStartedAt)
+    const availableRunWallClock = ORCHESTRATOR_RUN_WALL_CLOCK_MS - elapsed - reserved.run_wall_clock_ms
+    if (
+      elapsed >= ORCHESTRATOR_RUN_WALL_CLOCK_MS ||
+      request.budget.run_wall_clock_ms > availableRunWallClock
+    ) {
+      return { code: ERR.BUDGET_EXCEEDED, message: "the 120-minute run wall-clock budget is exhausted" }
+    }
+    return null
+  }
+
+  private async recordWorkRequest(
+    incidentId: string,
+    claims: LeaseClaims,
+    request: OrchestratorWorkRequest,
+    status: "admitted" | "rejected",
+    failure: DomainError,
+  ): Promise<Result<true, DomainError>> {
+    const policyVersion = await this.currentPolicyVersion(incidentId)
+    const applied = await this.journal.apply(
+      incidentId,
+      cmd.workRequestedCommand(
+        incidentId,
+        claims.runId,
+        request,
+        status,
+        policyVersion,
+        this.clock.nowIso(),
+        { code: failure.code, reason: failure.message, actorId: claims.actorId },
+      ),
+    )
+    if (applied.kind === "error") return err(applied.error)
+    if (applied.kind !== "applied") {
+      return err({ code: ERR.DUPLICATE_WORK, message: "work request rejection was already recorded" })
+    }
+    return ok(true)
+  }
+
+  private async withOrchestratorAdmissionLock<T>(
+    incidentId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.orchestratorAdmissionChains.get(incidentId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const chain = previous.then(() => current)
+    this.orchestratorAdmissionChains.set(incidentId, chain)
+    try {
+      await previous
+      return await operation()
+    } finally {
+      release()
+      if (this.orchestratorAdmissionChains.get(incidentId) === chain) {
+        this.orchestratorAdmissionChains.delete(incidentId)
+      }
+    }
+  }
+
+  private orchestratorState(
+    incidentId: string,
+    run: { runId: string; attempt: number; state: string; stageRecords: Array<{ stage: string; to: string; artifactRef?: ArtifactRef }> },
+  ): OrchestratorLifecycleState {
+    const events = this.journal.events(incidentId)
+    const stages: OrchestratorStageState[] = []
+    for (const stage of STAGE_ORDER) {
+      const last = this.lastStageRecord(run, stage)
+      if (last === undefined) continue
+      stages.push({
+        stage,
+        status: last.to as OrchestratorStageState["status"],
+        ...(last.artifactRef === undefined ? {} : { artifact_ref: last.artifactRef }),
+      })
+    }
+    const admittedWorkIds = events
+      .filter((event): event is Extract<JournalEvent, { type: "work_requested" }> =>
+        event.type === "work_requested" && event.run_id === run.runId && event.status === "admitted")
+      .map((event) => event.work_id)
+    const admittedArtifacts = events
+      .filter((event): event is Extract<JournalEvent, { type: "work_requested" }> =>
+        event.type === "work_requested" && event.run_id === run.runId && event.status === "admitted")
+      .flatMap((event) => event.admitted_artifact_refs)
+      .concat(events
+        .filter((event): event is Extract<JournalEvent, { type: "work_completed" }> =>
+          event.type === "work_completed" && event.run_id === run.runId)
+        .flatMap((event) => event.artifact_refs))
+      .filter((artifact, index, all) => all.findIndex((candidate) => candidate.content_hash === artifact.content_hash) === index)
+    const reserved = this.admittedBudgetUsage(incidentId, run.runId)
+    const elapsed = Math.max(0, this.clock.now().getTime() - this.runStartedAt(incidentId, run.runId))
+    return {
+      incident_id: incidentId,
+      run_id: run.runId,
+      attempt: run.attempt,
+      run_state: run.state,
+      current_stage: this.currentStage(run) as OrchestratorStage | null,
+      stages,
+      admitted_work_ids: admittedWorkIds,
+      admitted_artifacts: admittedArtifacts,
+      budgets: {
+        run_wall_clock_ms: ORCHESTRATOR_RUN_WALL_CLOCK_MS,
+        elapsed_ms: elapsed,
+        remaining_ms: Math.max(0, ORCHESTRATOR_RUN_WALL_CLOCK_MS - elapsed),
+        reserved_model_turns: reserved.model_turns,
+        reserved_non_terminal_tool_calls: reserved.non_terminal_tool_calls,
+        reserved_session_wall_clock_ms: reserved.session_wall_clock_ms,
+        reserved_run_wall_clock_ms: reserved.run_wall_clock_ms,
+      },
+    }
+  }
+
+  /** Sum active durable reservations before admitting another work unit. */
+  private admittedBudgetUsage(incidentId: string, runId: string): OrchestratorWorkBudget {
+    const usage: OrchestratorWorkBudget = {
+      model_turns: 0,
+      non_terminal_tool_calls: 0,
+      session_wall_clock_ms: 0,
+      run_wall_clock_ms: 0,
+    }
+    const events = this.journal.events(incidentId)
+    const completedWorkIds = new Set<string>()
+    for (const event of events) {
+      if (event.type === "work_completed" && event.run_id === runId) {
+        completedWorkIds.add(event.work_id)
+      }
+    }
+    for (const event of events) {
+      if (
+        event.type !== "work_requested" ||
+        event.run_id !== runId ||
+        event.status !== "admitted" ||
+        completedWorkIds.has(event.work_id)
+      ) continue
+      usage.model_turns += event.budget.model_turns
+      usage.non_terminal_tool_calls += event.budget.non_terminal_tool_calls
+      usage.session_wall_clock_ms += event.budget.session_wall_clock_ms
+      usage.run_wall_clock_ms += event.budget.run_wall_clock_ms
+    }
+    return usage
+  }
+
+  private currentStage(run: { stageRecords: Array<{ stage: string; to: string }> }): string | null {
+    for (const stage of STAGE_ORDER) {
+      const last = this.lastStageRecord(run, stage)
+      if (last !== undefined && last.to !== "completed" && last.to !== "skipped") return stage
+      if (last === undefined) return stage
+    }
+    return null
+  }
+
+  private lastStageRecord(
+    run: { stageRecords: Array<{ stage: string; to: string; artifactRef?: ArtifactRef }> },
+    stage: string,
+  ) {
+    return [...run.stageRecords].reverse().find((record) => record.stage === stage)
+  }
+
+  private runStartedAt(incidentId: string, runId: string): number {
+    const event = this.journal.events(incidentId).find(
+      (candidate) => candidate.type === "run_transition" && candidate.run_id === runId && candidate.to === "running",
+    )
+    const parsed = event === undefined ? Number.NaN : Date.parse(event.recorded_at)
+    return Number.isFinite(parsed) ? parsed : this.clock.now().getTime()
+  }
+
+  private admittedArtifactsForStage(
+    run: { stageRecords: Array<{ stage: string; to: string; artifactRef?: ArtifactRef }> },
+    stage: OrchestratorStage,
+  ): ArtifactRef[] {
+    const index = STAGE_ORDER.indexOf(stage)
+    const refs: ArtifactRef[] = []
+    for (const prior of STAGE_ORDER.slice(0, Math.max(0, index))) {
+      const ref = this.lastStageRecord(run, prior)?.artifactRef
+      if (ref !== undefined && refs.every((candidate) => candidate.content_hash !== ref.content_hash)) refs.push(ref)
+    }
+    return refs
   }
 
   // ------------------------------------------------------------------

@@ -140,7 +140,7 @@ export function parseIncidentTrigger(data: unknown): Result<IncidentTrigger, Par
 
 /** Parse and validate a journal event against the registry. */
 export function parseJournalEvent(data: unknown): Result<JournalEvent, ParseError> {
-  return parseTyped<JournalEvent>("journal-event", "1.0", data);
+  return parseTyped<JournalEvent>("journal-event", "1.1", data);
 }
 
 /** Parse and validate a saved bundle manifest against the registry. */

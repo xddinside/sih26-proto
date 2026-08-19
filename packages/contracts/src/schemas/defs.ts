@@ -37,6 +37,12 @@ export const SCHEMA_VERSION_1 = {
   const: "1.0",
 } as const;
 
+/** The durable schema version for the Orchestrator-aware journal and capture manifest. */
+export const SCHEMA_VERSION_1_1 = {
+  type: "string",
+  const: "1.1",
+} as const;
+
 /** Identity of the actor that authored a journal event. */
 export const ACTOR_KIND = {
   enum: [

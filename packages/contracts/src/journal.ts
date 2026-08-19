@@ -21,6 +21,7 @@ import type {
 } from "./schemas/incident.js";
 import type { DetectorState } from "./schemas/incident-trigger.js";
 import type { JournalCommand, JournalEvent } from "./schemas/journal-event.js";
+import type { OrchestratorArtifactRef, OrchestratorStage, OrchestratorWorkBudget } from "./orchestrator.js";
 import {
   checkStageRecords,
   isLegalIncidentTransition,
@@ -41,6 +42,24 @@ export interface RunRecord {
   stageRecords: StageTransition[];
 }
 
+/** Replay-visible admission and completion state for one Orchestrator unit. */
+export interface JournalWorkRecord {
+  requestId: string;
+  workId: string;
+  runId: string;
+  attempt: number;
+  stage: OrchestratorStage;
+  status: "admitted" | "rejected" | "completed";
+  dependsOn: string[];
+  budget: OrchestratorWorkBudget;
+  artifactRefs: OrchestratorArtifactRef[];
+}
+
+interface JournalSealedArtifact {
+  runId: string | undefined;
+  artifactRef: OrchestratorArtifactRef;
+}
+
 /** The aggregate state of one Incident reconstructed from its journal. */
 export interface JournalState {
   incidentId: string | null;
@@ -51,6 +70,8 @@ export interface JournalState {
   attemptsUsed: number;
   nextSequence: number;
   runs: RunRecord[];
+  workRecords: JournalWorkRecord[];
+  sealedArtifacts: JournalSealedArtifact[];
   seenIdempotencyKeys: Set<string>;
 }
 
@@ -65,6 +86,8 @@ export function initialJournalState(): JournalState {
     attemptsUsed: 0,
     nextSequence: 1,
     runs: [],
+    workRecords: [],
+    sealedArtifacts: [],
     seenIdempotencyKeys: new Set(),
   };
 }
@@ -121,6 +144,16 @@ function cloneJournalState(state: JournalState): JournalState {
         artifactRef:
           record.artifactRef === undefined ? undefined : { ...record.artifactRef },
       })),
+    })),
+    workRecords: state.workRecords.map((work) => ({
+      ...work,
+      dependsOn: [...work.dependsOn],
+      budget: { ...work.budget },
+      artifactRefs: work.artifactRefs.map((artifact) => ({ ...artifact })),
+    })),
+    sealedArtifacts: state.sealedArtifacts.map((sealed) => ({
+      runId: sealed.runId,
+      artifactRef: { ...sealed.artifactRef },
     })),
     seenIdempotencyKeys: new Set(state.seenIdempotencyKeys),
   };
@@ -335,7 +368,13 @@ function applyJournalEventMutable(
       }
       return ok(state);
     }
-    case "artifact_sealed":
+    case "artifact_sealed": {
+      state.sealedArtifacts.push({
+        runId: event.run_id,
+        artifactRef: { ...event.artifact_ref },
+      });
+      return ok(state);
+    }
     case "broker_receipt_recorded":
     case "gate_evaluated":
     case "policy_decision":
@@ -344,6 +383,70 @@ function applyJournalEventMutable(
     case "human_action":
     case "model_use":
       return ok(state);
+    case "work_requested": {
+      const run = findRun(state, event.run_id);
+      if (run === undefined) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work references unknown run ${event.run_id}`));
+      }
+      // A rejected proposal is an audit record, not a state mutation. Keep
+      // stale-attempt rejections replayable so the Control Plane can return
+      // the typed STALE_ATTEMPT result without corrupting the run reducer.
+      if (event.status !== "rejected" && event.attempt !== run.attempt) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work attempt ${event.attempt} does not match ${run.attempt}`));
+      }
+      if (state.workRecords.some((work) => work.requestId === event.request_id || work.workId === event.work_id)) {
+        return err(integrityError("DUPLICATE_TRANSITION", `work ${event.work_id} was requested more than once`));
+      }
+      if (event.status === "admitted") {
+        for (const dependency of event.depends_on) {
+          const completed = state.workRecords.some((work) =>
+            work.runId === event.run_id && work.workId === dependency && work.status === "completed",
+          );
+          if (!completed) {
+            return err(integrityError("ILLEGAL_TRANSITION", `work dependency ${dependency} was not completed before admission`));
+          }
+        }
+      }
+      state.workRecords.push({
+        requestId: event.request_id,
+        workId: event.work_id,
+        runId: event.run_id,
+        attempt: event.attempt,
+        stage: event.stage,
+        status: event.status,
+        dependsOn: [...event.depends_on],
+        budget: { ...event.budget },
+        artifactRefs: event.admitted_artifact_refs.map((artifact) => ({ ...artifact })),
+      });
+      return ok(state);
+    }
+    case "work_completed": {
+      const run = findRun(state, event.run_id);
+      if (run === undefined) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work completion references unknown run ${event.run_id}`));
+      }
+      if (event.attempt !== run.attempt) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work completion attempt ${event.attempt} does not match ${run.attempt}`));
+      }
+      const work = state.workRecords.find((candidate) =>
+        candidate.runId === event.run_id && candidate.workId === event.work_id && candidate.status === "admitted",
+      );
+      if (work === undefined) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work ${event.work_id} was not admitted`));
+      }
+      const hasSealedOutput = event.artifact_refs.every((artifact) => state.sealedArtifacts.some((sealed) =>
+        sealed.runId === event.run_id &&
+        sealed.artifactRef.schema_id === artifact.schema_id &&
+        sealed.artifactRef.schema_version === artifact.schema_version &&
+        sealed.artifactRef.content_hash === artifact.content_hash,
+      ));
+      if (!hasSealedOutput) {
+        return err(integrityError("ILLEGAL_TRANSITION", `work ${event.work_id} completed without sealed outputs`));
+      }
+      work.status = "completed";
+      work.artifactRefs = event.artifact_refs.map((artifact) => ({ ...artifact }));
+      return ok(state);
+    }
     default: {
       const never: never = event;
       return err(

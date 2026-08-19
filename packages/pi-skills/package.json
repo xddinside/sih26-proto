@@ -16,9 +16,12 @@
     "format": "prettier --write \"**/*.{ts,md,json}\"",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "smoke": "bun run scripts/smoke.ts"
+    "smoke": "bun run scripts/smoke.ts",
+    "smoke:live": "bun run scripts/live-role-smoke.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.79.4",
+    "@earendil-works/pi-ai": "0.79.4",
     "@sih/brokers": "workspace:*",
     "@sih/contracts": "workspace:*"
   },

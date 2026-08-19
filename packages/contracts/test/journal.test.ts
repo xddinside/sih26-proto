@@ -283,6 +283,74 @@ describe("reduceJournalEvents", () => {
     }
   });
 
+  test("replay requires completed work dependencies and sealed completion outputs", () => {
+    const budget = {
+      model_turns: 1,
+      non_terminal_tool_calls: 1,
+      session_wall_clock_ms: 1,
+      run_wall_clock_ms: 1,
+    };
+    const ref = { schema_id: "incident-brief", schema_version: "1.0", content_hash: h("brief-work") };
+    const request = (workId: string, dependsOn: string[] = []): JournalEvent => event("work_requested", {
+      run_id: "run-1",
+      attempt: 1,
+      request_id: `request-${workId}`,
+      work_id: workId,
+      stage: "detect",
+      status: "admitted",
+      depends_on: dependsOn,
+      budget,
+      admitted_artifact_refs: [],
+    });
+    const completion = event("work_completed", {
+      run_id: "run-1",
+      attempt: 1,
+      work_id: "work-a",
+      artifact_refs: [ref],
+    });
+    const base = validRun().slice(0, 4);
+    const missing = [...base, request("work-a"), request("work-b", ["work-a"])].map((item, index) => ({ ...item, sequence: index + 1 }));
+    expect(reduceJournalEvents(missing).ok).toBe(false);
+
+    const complete = [
+      ...base,
+      event("artifact_sealed", { run_id: "run-1", artifact_ref: ref }),
+      request("work-a"),
+      completion,
+      request("work-b", ["work-a"]),
+    ].map((item, index) => ({ ...item, sequence: index + 1 }));
+    const reduced = reduceJournalEvents(complete);
+    expect(reduced.ok).toBe(true);
+    if (reduced.ok) expect(reduced.value.workRecords.map((work) => work.status)).toEqual(["completed", "admitted"]);
+  });
+
+  test("replays stale rejected work as an audit record", () => {
+    const rejected = event("work_requested", {
+      run_id: "run-1",
+      attempt: 2,
+      request_id: "request-stale",
+      work_id: "work-stale",
+      stage: "detect",
+      status: "rejected",
+      depends_on: [],
+      budget: {
+        model_turns: 1,
+        non_terminal_tool_calls: 1,
+        session_wall_clock_ms: 1,
+        run_wall_clock_ms: 1,
+      },
+      admitted_artifact_refs: [],
+      code: "STALE_ATTEMPT",
+      reason: "request attempt 2 does not match run attempt 1",
+    });
+    const result = reduceJournalEvents([
+      ...validRun().slice(0, 4),
+      { ...rejected, sequence: 5 },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.workRecords).toMatchObject([{ workId: "work-stale", status: "rejected", attempt: 2 }]);
+  });
+
   test("rejects expected version mismatch", () => {
     const events = validRun().map((e) =>
       e.type === "incident_transition" && e.expected_version === 1

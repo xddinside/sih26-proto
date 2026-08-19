@@ -18,6 +18,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.79.4",
     "@sih/contracts": "workspace:*"
   },
   "devDependencies": {

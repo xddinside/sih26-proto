@@ -21,7 +21,7 @@
  * the image build).
  */
 import { readdir, readFile, stat } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 
 import type { ArtifactEnvelope } from "@sih/contracts/types"
 import { contentHash, isHashString } from "@sih/contracts/hashes"
@@ -133,7 +133,7 @@ export class ReadSnapshot {
         if (info.isDirectory()) {
           await walk(path)
         } else if (entry === name) {
-          matches.push(path.slice(this.root.length + 1))
+          matches.push(relative(this.root, path).replaceAll("\\", "/"))
         }
       }
     }
@@ -165,7 +165,8 @@ export class ReadSnapshot {
   /** Only paths inside the snapshot resolve; escape attempts fail closed. */
   private inside(relativePath: string): string {
     const path = resolve(this.root, relativePath)
-    if (!path.startsWith(this.root + "/") && path !== this.root) {
+    const fromRoot = relative(this.root, path).replaceAll("\\", "/")
+    if (isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith("../")) {
       throw new WorkerStartupError(
         "SNAPSHOT_ESCAPE",
         `path ${relativePath} escapes the pinned read snapshot`

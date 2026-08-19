@@ -259,6 +259,40 @@ describe("Hypothesis gate: eight checks", () => {
     const check = result.checks.find((entry) => entry.check === "cited-coverage")
     expect(check?.counts.uncited_claims).toBeGreaterThan(0)
   })
+
+  test("a malformed citation never passes the gate, no matter what the model claims", () => {
+    // The Synthesizer's top hypothesis cites an item id that does not exist
+    // in the pinned Evidence Set revision. The gate counts it as an uncited
+    // claim and cannot pass the hypothesis; model confidence plays no role.
+    const result = evaluateHypothesisGate({
+      ...baseInput(),
+      materialAlternatives: [
+        { hypothesis_id: "h2", eliminated_by_item_ids: [H(3)], failed_prediction_of_h: false, rejected: false },
+      ],
+      testRuns: [
+        {
+          prediction_id: "p1",
+          registered_at: "2026-08-15T15:40:00Z",
+          started_at: "2026-08-15T15:45:00Z",
+          receipt_ref: "rcpt-1",
+          outcome: "ok",
+          prediction_matched: true,
+        },
+      ],
+      hypothesis: hypothesis({
+        causal_claim: {
+          trigger: "seed commit",
+          defect: "card-type clause inverted",
+          propagation: [{ from: "trigger", to: "failure", cited_item_ids: [H(1), H(404)] }],
+          failure: "payment charge error ratio above 0.20",
+        },
+      }),
+    })
+    expect(result.verdict).not.toBe("pass")
+    const check = result.checks.find((entry) => entry.check === "cited-coverage")
+    expect(check?.result).toBe(false)
+    expect(check?.counts.uncited_claims).toBe(1)
+  })
 })
 
 describe("Action Gate: risk classes", () => {

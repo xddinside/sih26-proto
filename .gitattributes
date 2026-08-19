@@ -1,0 +1,3 @@
+demo/saved-runs/**/*.jsonl text eol=lf
+demo/fixtures/runs/**/*.jsonl text eol=lf
+demo/fixtures/contracts/valid/**/*.jsonl text eol=lf

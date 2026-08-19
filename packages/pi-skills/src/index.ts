@@ -47,6 +47,27 @@ export type {
 } from "./session.js"
 
 export {
+  PiRoleSession,
+  RoleSessionError,
+} from "./role/role-session.js"
+export type {
+  RoleSessionOptions,
+  RoleSessionResult,
+  RoleSessionStatus,
+} from "./role/role-session.js"
+export {
+  DEFAULT_ROLE_LIMITS,
+} from "./role/limits.js"
+export type { RoleLimits } from "./role/limits.js"
+export { effectiveToolSet } from "./role/authority.js"
+export type { ToolAuthority } from "./role/authority.js"
+export { createReadTool } from "./role/broker-tools.js"
+export type { BrokerReadToolOptions } from "./role/broker-tools.js"
+export { createTerminalTool, TerminalToolError } from "./role/terminal-tools.js"
+export type { TerminalTool, TerminalToolOptions } from "./role/terminal-tools.js"
+export { redactSecrets, containsNoSecrets } from "./role/redact.js"
+
+export {
   PARTICIPANT_SYSTEM_PROMPT,
   JUDGE_SYSTEM_PROMPT,
   SYNTHESIZER_SYSTEM_PROMPT,
@@ -76,11 +97,15 @@ export {
   artifactDigest,
   buildLaterContext,
   assertExcludedFromContext,
+  fusionRunArtifactWire,
 } from "./fusion/traces.js"
 export type {
   FusionRunArtifact,
   FusionPipelineCall,
   FusionCallKind,
+  FusionPerspective,
+  FusionRunMetrics,
+  FusionRunArtifactWire,
 } from "./fusion/traces.js"
 
 export {
@@ -102,6 +127,7 @@ export type {
 export {
   PRODUCTION_BUDGETS,
   DEMO_BUDGETS,
+  REHEARSAL_BUDGETS,
   BudgetTracker,
 } from "./worker/budgets.js"
 export type { Budgets, BudgetMetric, BudgetResult } from "./worker/budgets.js"
@@ -125,13 +151,26 @@ export {
   assembleProposalDraft,
   uncoveredSurfaces,
   validateProposalPayload,
+  fromRemediationDraft,
 } from "./repair/planner.js"
-export type { PlannerDraft, RemediationDisposition } from "./repair/planner.js"
+export type {
+  PlannerDraft,
+  PlannerDraftView,
+  RemediationDisposition,
+} from "./repair/planner.js"
 export {
   computeCandidateHash,
   validateImplementerDiff,
   assertExecutableSurface,
+  changedFilesFromDiff,
+  assertDiffInScope,
 } from "./repair/implementer.js"
+export { runRealRepairRound } from "./repair/repair-real.js"
+export type {
+  RealRepairRoundOptions,
+  RepairRoundResult,
+  RepairSealSurface,
+} from "./repair/repair-real.js"
 
 export {
   parseReviewReport,
@@ -147,6 +186,8 @@ export type {
 export {
   parseTestReport,
   outcomeFromReceipt,
+  outcomeFromRuns,
+  runsMatchReceipt,
   detectFlakyPass,
   assertReceiptBinding,
   assertT5Selection,
@@ -157,7 +198,19 @@ export type {
   TestLayerCode,
   ReceiptOutcome,
   PinnedToolEntry,
+  AssignedTestReceipt,
 } from "./tests/test-runner.js"
+
+export {
+  createAssignedTestTool,
+} from "./role/test-tools.js"
+export type { AssignedTestToolOptions } from "./role/test-tools.js"
+
+export { runRealVerifyRound } from "./verify/verify-real.js"
+export type {
+  RealVerifyRoundOptions,
+  VerifyRoundResult,
+} from "./verify/verify-real.js"
 
 export {
   PiOrchestratorExtension,
@@ -177,7 +230,45 @@ export type {
   GateEvaluationResponse,
   SubagentRunRecord,
   StageOutcome,
+  RepairRoundInput,
   WatchSample,
 } from "./orchestrator/orchestrator.js"
 export { HttpControlPlaneProposals } from "./orchestrator/http-proposals.js"
 export type { HttpProposalsOptions } from "./orchestrator/http-proposals.js"
+export {
+  ORCHESTRATOR_INSPECT_TOOL,
+  ORCHESTRATOR_REQUEST_TOOL,
+  createOrchestratorTools,
+  isOrchestratorWorkRequest,
+} from "./orchestrator/tools.js"
+export type { OrchestratorToolService } from "./orchestrator/tools.js"
+
+export { runRealFusionRound } from "./fusion/fusion-real.js"
+export type {
+  RealFusionRoundOptions,
+  RealFusionRoundResult,
+  FusionRoleSessionRecord,
+  FusionSealSurface,
+} from "./fusion/fusion-real.js"
+
+export {
+  runPlannerRole,
+  runImplementerRole,
+  runReviewRole,
+  runTestRole,
+  runOrchestratorRole,
+  createWorktreeHost,
+  createWorktreeTools,
+  buildUnifiedDiff,
+} from "./agent/roles.js"
+export type {
+  AgentSessionKit,
+  AgentSessionRecord,
+  AgentRoleResult,
+  WorktreeHost,
+  PlannerRoleOptions,
+  ImplementerRoleOptions,
+  ReviewRoleOptions,
+  TestRoleOptions,
+  OrchestratorRoleOptions,
+} from "./agent/roles.js"

@@ -70,6 +70,7 @@ export function buildDeterministicBrief(
     "## Binding incident facts (sealed Incident Brief v1)",
     `- Symptom: ${incidentBrief.symptom}`,
     `- Severity: ${incidentBrief.severity}`,
+    `- Scope: tenant ${incidentBrief.scope.tenant_id}, environment ${incidentBrief.scope.deployment_environment_name}, service ${incidentBrief.scope.service_name}`,
     `- Policy version in force: ${incidentBrief.policy_version}`,
     incidentBrief.known_limits === undefined
       ? ""
@@ -158,5 +159,110 @@ export function createSynthesizerPrompt(
       .join("\n\n"),
     "",
     "Write the final structured synthesized result as the Fusion Synthesizer Output v1 JSON object.",
+  ].join("\n")
+}
+
+export const REVIEW_SYSTEM_PROMPT = [
+  "You are one specialist reviewer in the SIH Verify stage.",
+  "You receive the candidate diff, its changed files, the accepted Hypothesis, and the Evidence Set revision id; you never see peer reports.",
+  "Every finding must cite a file and line in the diff, a deterministic check output reference, an Evidence Set item id, or a named Recovery Point gap. A blocker or major finding without citations is incomplete and reruns.",
+  "Your final output MUST be a single JSON object matching the Review Report v1 schema: schema_version, incident_id, run_id, attempt, candidate_hash, role, reviewer, revision, input_refs, findings, status, sealed_at.",
+  "You cannot edit code, plans, or reports. Read-only investigation only.",
+  "Do not include prose around the JSON object.",
+].join("\n")
+
+export const TEST_SYSTEM_PROMPT = [
+  "You are one specialist test subagent in the SIH Verify stage.",
+  "You receive the candidate diff, its changed files, and the recorded test-run receipts; you never see peer reports.",
+  "Your final output MUST be a single JSON object matching the Test Report v1 schema: schema_version, incident_id, run_id, attempt, candidate_hash, layer, tool, tool_version, target, receipt_ref, runs, outcome, flaky, coverage_checked, sealed_at.",
+  "The outcome must match the recorded receipt runs; you cannot fabricate a pass or a failure.",
+  "You cannot edit code, plans, or reports. Read-only investigation only.",
+  "Do not include prose around the JSON object.",
+].join("\n")
+
+export const REPAIR_PLANNER_SYSTEM_PROMPT = [
+  "You are the repair planner in the SIH Repair stage.",
+  "You receive the accepted Hypothesis, the incident context, the Recovery Point, and the changed-surface policy. You propose the remediation; the Orchestrator and the Control Plane decide.",
+  "Your final output MUST be a single JSON object matching the Remediation Draft v1 schema: schema_version, incident_id, run_id, attempt, remediation_class, action_risk_class, gate_path, disposition, change_description, citations, test_plan, changed_surfaces, typed_action_plan, completed_at.",
+  "You cannot change files, merge, deploy, or execute production actions.",
+  "Do not include prose around the JSON object.",
+].join("\n")
+
+export const REPAIR_IMPLEMENTER_SYSTEM_PROMPT = [
+  "You are the repair implementer in the SIH Repair stage.",
+  "You work only inside your private copy-on-write worktree. You apply the approved remediation to the changed files there; you never merge, deploy, or touch production.",
+  "Your final output MUST be a single JSON object matching the Implemented Diff v1 schema: schema_version, incident_id, run_id, attempt, base_ref, diff_text, diff_hash, changed_files, completed_at.",
+  "The diff_text must contain the complete unified diff of your worktree changes against the base ref.",
+  "Do not include prose around the JSON object.",
+].join("\n")
+
+export const ORCHESTRATOR_SYSTEM_PROMPT = [
+  "You are the Pi Orchestrator role in the SIH run.",
+  "You receive the deterministic stage outcomes and the sealed artifact digests for the whole run. In a scheduler session, use only the typed lifecycle inspection and work-request tools to propose the current eligible bounded unit; in a final-report session, propose nothing beyond your report. The Control Plane owns every decision.",
+  "Your final output MUST be a single JSON object matching the Orchestrator Report v1 schema: schema_version, incident_id, run_id, attempt, stage_outcomes, assessments, reflections, completed_at.",
+  "Do not include prose around the JSON object.",
+].join("\n")
+
+export function createReviewPrompt(options: {
+  role: string
+  candidateHash: string
+  hypothesis: string
+  /** The accepted Remediation (serialized Remediation Draft), when sealed. */
+  acceptedRemediation?: string
+  /** The accepted Recovery Point hash the reviewer can cite (R8). */
+  recoveryPointHash: string
+  revisionId: string
+  diffText: string
+  changedFiles: readonly string[]
+  checkHints?: readonly string[]
+  inputRefs?: readonly string[]
+}): string {
+  return [
+    "# Review Task",
+    `Review role ${options.role} against the candidate ${options.candidateHash}.`,
+    "",
+    `## Accepted Hypothesis\n${options.hypothesis}`,
+    ...(options.acceptedRemediation === undefined
+      ? []
+      : ["", "## Accepted Remediation", options.acceptedRemediation]),
+    `## Recovery Point\n${options.recoveryPointHash}`,
+    `## Evidence Set revision id\n${options.revisionId}`,
+    "",
+    "## Candidate diff",
+    options.diffText,
+    "",
+    `## Changed files\n${options.changedFiles.join("\n")}`,
+    ...(options.checkHints === undefined || options.checkHints.length === 0
+      ? []
+      : ["", "## Checks for this role", ...options.checkHints]),
+    ...(options.inputRefs === undefined || options.inputRefs.length === 0
+      ? []
+      : ["", "## Input references", ...options.inputRefs]),
+    "",
+    "Return your final review as the Review Report v1 JSON object.",
+  ].join("\n")
+}
+
+export function createTestPrompt(options: {
+  layer: string
+  candidateHash: string
+  diffText: string
+  changedFiles: readonly string[]
+  runsSummary: string
+  target: string
+}): string {
+  return [
+    "# Test Task",
+    `Assemble the Test Report v1 for layer ${options.layer} against the candidate ${options.candidateHash}.`,
+    "",
+    "## Candidate diff",
+    options.diffText,
+    "",
+    `## Changed files\n${options.changedFiles.join("\n")}`,
+    "",
+    "## Recorded test runs",
+    options.runsSummary,
+    "",
+    "Return your final report as the Test Report v1 JSON object.",
   ].join("\n")
 }

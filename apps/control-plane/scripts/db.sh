@@ -37,7 +37,7 @@ case "${1:-}" in
     echo "[db] applying db/init.sql"
     docker exec -i "$NAME" psql -U "$DB_USER" -d "$DB_NAME" \
       < "$(dirname "$0")/../db/init.sql"
-    for test_db in sih_test_state sih_test_leases; do
+    for test_db in sih_test_state sih_test_leases sih_test_orchestrator-work; do
       docker exec "$NAME" createdb -U "$DB_USER" "$test_db" 2>/dev/null || true
     done
     echo "[db] ready at postgres://$DB_USER:***@127.0.0.1:$PORT/$DB_NAME"
