@@ -278,7 +278,6 @@ function modelUseRecord(
     token_use: {
       prompt_tokens: message.usage?.input ?? 0,
       completion_tokens: message.usage?.output ?? 0,
-      total_tokens: message.usage?.totalTokens ?? 0,
     },
     tool_calls: message.content
       .filter((block): block is Extract<typeof block, { type: "toolCall" }> => block.type === "toolCall")

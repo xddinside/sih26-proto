@@ -99,8 +99,8 @@ describe("Model Gateway streaming transport", () => {
     expect(use?.token_use).toMatchObject({
       prompt_tokens: 8,
       completion_tokens: 8,
-      total_tokens: 16,
     })
+    expect(use?.token_use).not.toHaveProperty("total_tokens")
     expect(use?.tool_calls).toEqual([])
   })
 

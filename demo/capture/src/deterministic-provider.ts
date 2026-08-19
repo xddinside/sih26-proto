@@ -70,8 +70,24 @@ function currentStage(text: string): "detect" | "diagnose" | "repair" | "verify"
   return (text.match(/"current_stage"\s*:\s*"(detect|diagnose|repair|verify|release|watch)"/)?.[1] ?? "detect") as ReturnType<typeof currentStage>
 }
 
+function admittedWorkIds(text: string): string[] {
+  const body = text.match(/"admitted_work_ids"\s*:\s*\[([^\]]*)\]/)?.[1] ?? ""
+  return [...body.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)].map((match) => match[1] ?? "")
+}
+
 function incidentAndRun(options: DeterministicProviderOptions) {
   return { incident_id: options.incidentId, run_id: options.runId, attempt: 1 }
+}
+
+function stageOutcomes(text: string, seed: "S1" | "S2") {
+  const value = (stage: "detect" | "diagnose" | "repair" | "verify", fallback: string): string =>
+    text.match(new RegExp(`- ${stage}: ([^\\n]+)`))?.[1]?.trim() ?? fallback
+  return {
+    detect: value("detect", "pending"),
+    diagnose: value("diagnose", "pending"),
+    repair: value("repair", "pending"),
+    verify: value("verify", seed === "S1" ? "completed" : "failed"),
+  }
 }
 
 function plannerPayload(request: GatewayStreamRequest, options: DeterministicProviderOptions): Record<string, unknown> {
@@ -230,6 +246,16 @@ export function deterministicStreamingProvider(
       }
       if (request.agentRole === "orchestrator") {
         if (turnIndex === 0) return { kind: "tool-call", id: "inspect-state", name: "inspect_orchestrator_state", args: {} }
+        if (request.agentId.includes("final-report")) {
+          return terminal("submit_orchestrator_report", {
+            schema_version: "1.0",
+            ...incidentAndRun(options),
+            stage_outcomes: stageOutcomes(text, options.seed),
+            assessments: ["deterministic provider replayed the frozen Evidence Set"],
+            reflections: ["Control Plane gates owned the lifecycle outcome"],
+            completed_at: now(),
+          })
+        }
         if (turnIndex === 1) return {
           kind: "tool-call",
           id: "request-work",
@@ -239,14 +265,14 @@ export function deterministicStreamingProvider(
             work_id: `rehearsal-${options.runId}-${request.agentId}-work`,
             stage: currentStage(text),
             attempt: 1,
-            depends_on: [],
+            depends_on: currentStage(text) === "detect" ? [] : admittedWorkIds(text).slice(-1),
             budget: options.requestBudget,
           },
         }
         return terminal("submit_orchestrator_report", {
           schema_version: "1.0",
           ...incidentAndRun(options),
-          stage_outcomes: { detect: "completed", diagnose: "completed", repair: "completed", verify: options.seed === "S1" ? "completed" : "failed" },
+          stage_outcomes: stageOutcomes(text, options.seed),
           assessments: ["deterministic provider replayed the frozen Evidence Set"],
           reflections: ["Control Plane gates owned the lifecycle outcome"],
           completed_at: now(),

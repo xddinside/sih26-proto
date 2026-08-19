@@ -586,6 +586,7 @@ export async function runOrchestratorRole(
     kit.signal.addEventListener("abort", revokeDependentWork, { once: true })
   }
   try {
+    const isScheduler = options.sessionId?.startsWith("scheduler-") === true
     return await runRoleSession<OrchestratorReport>({
       kit,
       agentId: options.sessionId === undefined
@@ -596,6 +597,13 @@ export async function runOrchestratorRole(
       promptText: [
         "# Run Summary",
         options.runContext,
+        ...(isScheduler
+          ? [
+              "",
+              "## Scheduling protocol",
+              "Call inspect_orchestrator_state first. Then request exactly one bounded work unit for the current eligible stage, using only dependencies and budgets that the projection permits. The Control Plane owns every rejection; do not retry around a rejection or perform stage work yourself.",
+            ]
+          : []),
         "",
         "## Deterministic stage outcomes",
         `- detect: ${options.stageOutcomes.detect}`,

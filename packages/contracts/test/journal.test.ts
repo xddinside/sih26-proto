@@ -324,6 +324,33 @@ describe("reduceJournalEvents", () => {
     if (reduced.ok) expect(reduced.value.workRecords.map((work) => work.status)).toEqual(["completed", "admitted"]);
   });
 
+  test("replays stale rejected work as an audit record", () => {
+    const rejected = event("work_requested", {
+      run_id: "run-1",
+      attempt: 2,
+      request_id: "request-stale",
+      work_id: "work-stale",
+      stage: "detect",
+      status: "rejected",
+      depends_on: [],
+      budget: {
+        model_turns: 1,
+        non_terminal_tool_calls: 1,
+        session_wall_clock_ms: 1,
+        run_wall_clock_ms: 1,
+      },
+      admitted_artifact_refs: [],
+      code: "STALE_ATTEMPT",
+      reason: "request attempt 2 does not match run attempt 1",
+    });
+    const result = reduceJournalEvents([
+      ...validRun().slice(0, 4),
+      { ...rejected, sequence: 5 },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.workRecords).toMatchObject([{ workId: "work-stale", status: "rejected", attempt: 2 }]);
+  });
+
   test("rejects expected version mismatch", () => {
     const events = validRun().map((e) =>
       e.type === "incident_transition" && e.expected_version === 1

@@ -184,7 +184,18 @@ describe("Control Plane Orchestrator work admission", () => {
       runId,
       schemaId: "incident-brief",
       schemaVersion: "1.0",
-      payload: { schema_version: "1.0", incident_id: incidentId, run_id: runId, attempt: 1, summary: "test" } as never,
+      payload: {
+        schema_version: "1.0",
+        incident_id: incidentId,
+        run_id: runId,
+        attempt: 1,
+        severity: "critical",
+        scope: { tenant_id: "demo", deployment_environment_name: "demo", service_name: "payment" },
+        symptom: "payment charges fail",
+        initial_evidence_item_ids: [],
+        policy_version: (await cp.getPolicy(incidentId)).version,
+        sealed_at: "2026-08-15T15:00:00.000Z",
+      },
       producer: { skill: "test", skill_version: "1.0" },
     }))
     expect((await cp.submitCommand(incidentId, detect.token, detect.claims, { kind: "enter-stage", stage: "detect" })).ok).toBe(true)
@@ -203,5 +214,26 @@ describe("Control Plane Orchestrator work admission", () => {
     }))
     expect(admitted.status).toBe("admitted")
     if (admitted.status === "admitted") expect(admitted.admitted_artifacts).toContainEqual(brief.artifactRef)
+  })
+
+  test("revocation stops dependent scheduling and invalidates the active lease", async () => {
+    const intake = must(await cp.handleTrigger(trigger(3)))
+    const incidentId = intake.incidentId
+    const runId = "run-1"
+    await cp.startRun(incidentId, runId)
+    const current = await lease(cp, incidentId, runId, "detect")
+
+    await cp.revokeOrchestratorWork(incidentId, runId)
+
+    const afterRevoke = await cp.requestOrchestratorWork(incidentId, current.token, current.claims, {
+      request_id: "request-after-revoke",
+      work_id: "detect-after-revoke",
+      stage: "detect",
+      attempt: 1,
+      depends_on: [],
+      budget: { ...budget, model_turns: 1, non_terminal_tool_calls: 1, session_wall_clock_ms: 1, run_wall_clock_ms: 1 },
+    })
+    expect(afterRevoke.ok).toBe(false)
+    if (!afterRevoke.ok) expect(afterRevoke.error.code).toBe("REVOKED_LEASE")
   })
 })

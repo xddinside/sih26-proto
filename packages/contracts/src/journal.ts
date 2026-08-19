@@ -388,7 +388,10 @@ function applyJournalEventMutable(
       if (run === undefined) {
         return err(integrityError("ILLEGAL_TRANSITION", `work references unknown run ${event.run_id}`));
       }
-      if (event.attempt !== run.attempt) {
+      // A rejected proposal is an audit record, not a state mutation. Keep
+      // stale-attempt rejections replayable so the Control Plane can return
+      // the typed STALE_ATTEMPT result without corrupting the run reducer.
+      if (event.status !== "rejected" && event.attempt !== run.attempt) {
         return err(integrityError("ILLEGAL_TRANSITION", `work attempt ${event.attempt} does not match ${run.attempt}`));
       }
       if (state.workRecords.some((work) => work.requestId === event.request_id || work.workId === event.work_id)) {

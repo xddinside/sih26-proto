@@ -16,8 +16,6 @@
  * surface are the only seams the driver controls.
  */
 import { createHmac } from "node:crypto"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { ModelGateway, ReadBroker, piAiStreamingProvider, stubProvider } from "@sih/brokers"
@@ -50,6 +48,7 @@ import { reviewInputFromReport, testInputFromReport } from "@sih/control-plane/s
 import { bootstrapWorker } from "../../../packages/pi-skills/src/worker/bootstrap.js"
 import { DEMO_BUDGETS, REHEARSAL_BUDGETS } from "../../../packages/pi-skills/src/worker/budgets.js"
 import { loadSkillTree } from "../../../packages/pi-skills/src/skill-catalog.js"
+import { installedVersion } from "../../../packages/pi-skills/src/versions.js"
 import { PiOrchestratorExtension } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import type {
   ControlPlaneProposals,
@@ -216,18 +215,6 @@ export function skillTreeDigestOf(skills: Map<string, { contract: { name: string
     .map((skill) => `${skill.contract.name}@${skill.contract.version}`)
     .sort()
   return hashOf({ kind: "skill-tree", entries })
-}
-
-/** The installed published-package version (pi-agent-core / pi-ai). */
-export function installedVersion(packageName: "pi-agent-core" | "pi-ai"): string {
-  const manifestPath = join(
-    fileURLToPath(new URL("../../../node_modules", import.meta.url)),
-    "@earendil-works",
-    packageName,
-    "package.json",
-  )
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: string }
-  return manifest.version ?? "unknown"
 }
 
 /** The real Read Broker adapters for the live shop backends. */
@@ -1057,6 +1044,17 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       session_wall_clock_ms: 12 * 60_000,
       run_wall_clock_ms: 120 * 60_000,
     }
+    // A rehearsal schedules one bounded work unit per workflow stage. Split
+    // the approved aggregate reservation into six stage slices plus headroom
+    // for elapsed wall clock and cancellation, so the first request does not
+    // claim the entire 120-minute Incident Run budget.
+    const schedulerBudgetSlices = 8
+    const schedulerWorkBudget = {
+      model_turns: Math.max(1, Math.floor(agentBudgets.model_turns / schedulerBudgetSlices)),
+      non_terminal_tool_calls: Math.max(1, Math.floor(agentBudgets.non_terminal_tool_calls / schedulerBudgetSlices)),
+      session_wall_clock_ms: Math.max(1, Math.floor(agentBudgets.session_wall_clock_ms / schedulerBudgetSlices)),
+      run_wall_clock_ms: Math.max(1, Math.floor(agentBudgets.run_wall_clock_ms / schedulerBudgetSlices)),
+    }
     const deterministic = realAgent?.provider === "deterministic"
     const gatewayProvider = deterministic
       ? deterministicStreamingProvider({
@@ -1066,7 +1064,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           hypotheses,
           evidenceIds: ids,
           seed: facts.seed,
-          requestBudget: agentBudgets,
+          requestBudget: schedulerWorkBudget,
         })
       : realAgent?.streaming ?? piAiStreamingProvider
     const gatewayProviderName = deterministic ? "opencode-go" : realAgent?.provider
@@ -1168,19 +1166,70 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           orchestrator: orchestratorService,
         })
 
-    // 6. Detect: bounded real Read Broker verification reads, then the Brief.
-    const detectProposals = inProcessProposals(cp, detectLease)
-    kit?.bindStage(detectProposals, detectLease)
-    if (kit !== null) {
+    const scheduledWorkIds = new Map<OrchestratorWorkRequest["stage"], string[]>()
+    const claimsFor = (lease: StageLease) => ({
+      leaseId: lease.leaseId,
+      incidentId: lease.incidentId,
+      runId: lease.runId,
+      attempt: lease.attempt,
+      stage: lease.stage,
+      actorId: lease.actorId,
+      actorKind: lease.actorKind,
+      toolClass: lease.toolClass,
+    })
+    const scheduleStageWork = async (
+      stage: OrchestratorWorkRequest["stage"],
+      lease: StageLease,
+      proposals: ControlPlaneProposals,
+      stageOutcomes: { detect: string; diagnose: string; repair: string; verify: string },
+      runContext: string,
+    ): Promise<string[]> => {
+      if (kit === null) return []
+      orchestratorLease = lease
+      kit.bindStage(proposals, lease)
+      const before = await cp.inspectOrchestratorState(incidentId, lease.token, claimsFor(lease))
+      if (!before.ok) throw new Error(before.error.message)
       await kit.runOrchestrator({
         incidentId,
         runId,
         attempt: 1,
-        sessionId: "scheduler",
-        stageOutcomes: { detect: "pending", diagnose: "pending", repair: "pending", verify: "pending" },
-        runContext: "The bounded Orchestrator scheduler is inspecting Detect and requesting its eligible work before dependent stages are dispatched.",
+        sessionId: `scheduler-${stage}`,
+        stageOutcomes,
+        runContext: [
+          runContext,
+          `Approved per-stage work budget: ${JSON.stringify(schedulerWorkBudget)}`,
+        ].join("\n"),
       })
+      const after = await cp.inspectOrchestratorState(incidentId, lease.token, claimsFor(lease))
+      if (!after.ok) throw new Error(after.error.message)
+      const prior = new Set(before.value.admitted_work_ids)
+      const admitted = after.value.admitted_work_ids.filter((workId) => !prior.has(workId))
+      if (admitted.length === 0) throw new Error(`Orchestrator did not admit eligible ${stage} work`)
+      scheduledWorkIds.set(stage, admitted)
+      console.log(`[capture] orchestrator admitted ${stage} work: ${admitted.join(", ")}`)
+      return admitted
     }
+    const completeStageWork = async (
+      stage: OrchestratorWorkRequest["stage"],
+      lease: StageLease,
+      artifactRefs: Array<{ schema_id: string; schema_version: string; content_hash: string }>,
+    ): Promise<void> => {
+      if (kit === null) return
+      for (const workId of scheduledWorkIds.get(stage) ?? []) {
+        const completed = await cp.completeOrchestratorWork(incidentId, lease.token, claimsFor(lease), workId, artifactRefs)
+        if (!completed.ok) throw new Error(`scheduler work ${workId} could not be completed: ${completed.error.message}`)
+      }
+    }
+
+    // 6. Detect: bounded real Read Broker verification reads, then the Brief.
+    const detectProposals = inProcessProposals(cp, detectLease)
+    await scheduleStageWork(
+      "detect",
+      detectLease,
+      detectProposals,
+      { detect: "pending", diagnose: "pending", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is inspecting Detect and requesting its eligible work before dependent stages are dispatched.",
+    )
     const detectOrchestrator = new PiOrchestratorExtension(
       {
         runtime: worker,
@@ -1244,33 +1293,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         (artifact) => artifact.artifactRef.schema_id === "incident-brief",
       )?.artifactRef
       if (briefRef !== undefined) {
-        const schedulerState = await cp.inspectOrchestratorState(incidentId, detectLease.token, {
-          leaseId: detectLease.leaseId,
-          incidentId,
-          runId,
-          attempt: 1,
-          stage: detectLease.stage,
-          actorId: detectLease.actorId,
-          actorKind: detectLease.actorKind,
-          toolClass: detectLease.toolClass,
-        })
-        if (schedulerState.ok) {
-          for (const workId of schedulerState.value.admitted_work_ids) {
-            const completed = await cp.completeOrchestratorWork(incidentId, detectLease.token, {
-              leaseId: detectLease.leaseId,
-              incidentId,
-              runId,
-              attempt: 1,
-              stage: detectLease.stage,
-              actorId: detectLease.actorId,
-              actorKind: detectLease.actorKind,
-              toolClass: detectLease.toolClass,
-            }, workId, [briefRef])
-            if (!completed.ok) {
-              throw new Error(`scheduler work ${workId} could not be completed: ${completed.error.message}`)
-            }
-          }
-        }
+        await completeStageWork("detect", detectLease, [briefRef])
       }
     }
 
@@ -1278,19 +1301,6 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     //    the real deterministic Hypothesis gate, and sealed fusion artifacts.
     const diagnoseLease = await issueLease("diagnose")
     const diagnoseProposals = inProcessProposals(cp, diagnoseLease)
-    kit?.bindStage(diagnoseProposals, diagnoseLease)
-    const diagnoseOrchestrator = new PiOrchestratorExtension(
-      {
-        runtime: worker,
-        proposals: diagnoseProposals,
-        gateway,
-        lease: diagnoseLease,
-        evidence: bundle,
-        readBroker,
-      },
-      skills,
-      "diagnose",
-    )
     await diagnoseProposals.sealArtifact({
       schemaId: "evidence-set",
       schemaVersion: "1.0",
@@ -1305,6 +1315,25 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       },
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
     })
+    await scheduleStageWork(
+      "diagnose",
+      diagnoseLease,
+      diagnoseProposals,
+      { detect: "completed", diagnose: "pending", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Diagnose only after Detect and its sealed Incident Brief are complete.",
+    )
+    const diagnoseOrchestrator = new PiOrchestratorExtension(
+      {
+        runtime: worker,
+        proposals: diagnoseProposals,
+        gateway,
+        lease: diagnoseLease,
+        evidence: bundle,
+        readBroker,
+      },
+      skills,
+      "diagnose",
+    )
 
     const diagnose = await diagnoseOrchestrator.driveDiagnose({
       task: `Diagnose the ${incidentFacts.symptom} from the pinned Evidence Set revision ${revisionId}.`,
@@ -1406,11 +1435,23 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       }
     }
 
+    const diagnosisReportRef = [...cp.sealedArtifacts(incidentId, runId)]
+      .reverse()
+      .find((artifact) => artifact.artifactRef.schema_id === "diagnosis-report")?.artifactRef
+    if (diagnosisReportRef === undefined) throw new Error("diagnosis report was not sealed")
+    await completeStageWork("diagnose", diagnoseLease, [diagnosisReportRef])
+
     // 8. Repair: planner/implementer (deterministic fixture or real Pi role
     //    sessions), deterministic risk class, PR-shaped record, Recovery Point.
     const repairLease = await issueLease("repair")
     const repairProposals = inProcessProposals(cp, repairLease)
-    kit?.bindStage(repairProposals, repairLease)
+    await scheduleStageWork(
+      "repair",
+      repairLease,
+      repairProposals,
+      { detect: "completed", diagnose: "completed", repair: "pending", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Repair only after the completed Diagnosis Report is admitted as a prerequisite.",
+    )
     const recoveryPointPayload = {
       schema_version: "1.0",
       recovery_point_id: "recovery-point-card-type",
@@ -1506,6 +1547,11 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     // detail is the content hash the gate and reports bind to.
     const candidateHash = repair.detail as HashString
     console.log(`[capture] repair sealed remediation-proposal candidate=${candidateHash}`)
+    const remediationProposalRef = [...cp.sealedArtifacts(incidentId, runId)]
+      .reverse()
+      .find((artifact) => artifact.artifactRef.schema_id === "remediation-proposal")?.artifactRef
+    if (remediationProposalRef === undefined) throw new Error("remediation proposal was not sealed")
+    await completeStageWork("repair", repairLease, [remediationProposalRef])
 
     const repairEnv: ReceiptEnv = { incidentId, runId, leaseId: repairLease.leaseId, stage: "repair", candidateHash }
     const prReceipt = actionReceipt(repairEnv, {
@@ -1528,7 +1574,13 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     // 9. Verify: real test runs, receipts, review/test reports, deterministic verdict.
     const verifyLease = await issueLease("verify")
     const verifyProposals = inProcessProposals(cp, verifyLease)
-    kit?.bindStage(verifyProposals, verifyLease)
+    await scheduleStageWork(
+      "verify",
+      verifyLease,
+      verifyProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "pending" },
+      "The bounded Orchestrator scheduler is requesting Verify only after the accepted remediation proposal is sealed.",
+    )
     await verifyProposals.stageCommand({ kind: "enter-stage", stage: "verify" })
     await verifyProposals.stageCommand({ kind: "stage-status", stage: "verify", to: "in-progress" })
 
@@ -1843,6 +1895,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         mode: options.mode ?? "full-capture",
         runtime,
         artifactRef: verificationReportRef,
+        completeWork: async () => completeStageWork("verify", verifyLease, [verificationReportRef]),
       })
     }
 
@@ -1854,12 +1907,20 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       artifact_ref: verificationReportRef,
       candidate_hash: candidateHash,
     })
+    await completeStageWork("verify", verifyLease, [verificationReportRef])
     console.log(`[capture] verify completed with pass verdict`)
 
     // 10. Release: frozen Watch plan, hybrid policy decision, operator approval,
     //     the eight Release Gate facts, permit, candidate deploy.
     const releaseLease = await issueLease("release")
     const releaseProposals = inProcessProposals(cp, releaseLease)
+    await scheduleStageWork(
+      "release",
+      releaseLease,
+      releaseProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "completed" },
+      "The bounded Orchestrator scheduler is requesting Release only after the passing verification report is sealed.",
+    )
     await releaseProposals.stageCommand({ kind: "enter-stage", stage: "release" })
     await releaseProposals.stageCommand({ kind: "stage-status", stage: "release", to: "in-progress" })
 
@@ -2074,15 +2135,22 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       candidate_hash: candidateHash,
       artifact_ref: releaseRecordSealed.artifact_ref,
     })
+    await completeStageWork("release", releaseLease, [releaseRecordSealed.artifact_ref])
     console.log(`[capture] release completed (release record sealed, permit ${permit.permitId})`)
 
     // 11. Watch: stage 1 probe ring (20/20 in three windows), stage 2 service
     //     swap, G1-G6 across three windows, confirmation window.
     const watchLease = await issueLease("watch")
     const watchProposals = inProcessProposals(cp, watchLease)
+    await scheduleStageWork(
+      "watch",
+      watchLease,
+      watchProposals,
+      { detect: "completed", diagnose: "completed", repair: "completed", verify: "completed" },
+      "The bounded Orchestrator scheduler is requesting Watch only after the Release record is sealed.",
+    )
     await watchProposals.stageCommand({ kind: "enter-stage", stage: "watch" })
     await watchProposals.stageCommand({ kind: "stage-status", stage: "watch", to: "in-progress" })
-    orchestratorLease = watchLease
     const watchEnv: ReceiptEnv = { incidentId, runId, leaseId: watchLease.leaseId, stage: "watch", candidateHash }
 
     const stage1Samples: Record<string, unknown>[] = []
@@ -2361,6 +2429,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       to: "completed",
       artifact_ref: confirmationSealed.artifact_ref,
     })
+    await completeStageWork("watch", watchLease, [confirmationSealed.artifact_ref])
     assertRunBudget()
     if (kit !== null) {
       kit.bindStage(watchProposals, watchLease)
@@ -2498,7 +2567,10 @@ async function failVerifyAndReturn(options: {
   artifactRef?: cmd.ArtifactRef
   /** The stage-failure reason, when no verdict artifact exists. */
   stageReason?: string
+  /** Complete admitted Verify work when a sealed failure report exists. */
+  completeWork?: () => Promise<void>
 }): Promise<CaptureReport> {
+  await options.completeWork?.()
   await options.verifyProposals.stageCommand({
     kind: "stage-status",
     stage: "verify",
