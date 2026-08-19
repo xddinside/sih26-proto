@@ -1,4 +1,4 @@
-import { runs, toneFor } from "./data.js?rev=20260819-3"
+import { runs, toneFor } from "./data.js?rev=20260819-5"
 
 const icons = {
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
@@ -59,7 +59,6 @@ export function runMeta(run) {
     <span>${run.service}</span>
     <span>Attempt ${run.attempt}</span>
     <span>${run.duration}</span>
-    <span class="vr-mono">${run.runId}</span>
   </div>`
 }
 
@@ -70,7 +69,7 @@ export function statusIcon(result) {
 }
 
 function factRows(rows) {
-  return `<dl class="vr-detail-facts">${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>`
+  return `<dl class="vr-dl">${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl>`
 }
 
 function selectedRecord(run, key) {
@@ -80,52 +79,51 @@ function selectedRecord(run, key) {
       title: `${run.shortId} · ${run.state}`,
       tone: run.stateTone,
       summary: run.lead,
-      facts: [["Run", run.runId], ["Started", run.started], ["Ended", run.ended], ["Duration", run.duration], ["Policy", run.policy], ["Candidate", run.candidate]],
-      note: `Captured ${run.captured}. The journal and sealed artifacts are replayed without live agent activity.`,
+      facts: [["Run", run.runId], ["Started", run.started], ["Policy", run.policy], ["Candidate", run.candidate]],
     }
   }
   const [kind, id] = key.split(":")
   if (kind === "event") {
     const event = run.events.find((item) => item.id === id)
     if (!event) return selectedRecord(run, "run")
-    return { kicker: `${event.stage} event`, title: event.title, tone: toneFor(event.status), summary: event.summary, facts: [["Recorded", event.time], ["Actor", event.actor], ["Kind", event.kind], ["Source", event.ref]], note: "Select the source record to continue through the proof chain." }
+    return { kicker: `${event.stage} event`, title: event.title, tone: toneFor(event.status), summary: event.summary, facts: [["Recorded", event.time], ["Actor", event.actor], ["Kind", event.kind], ["Source", event.ref]] }
   }
   if (kind === "evidence") {
     const item = run.evidence.find((entry) => entry.id === id)
     if (!item) return selectedRecord(run, "run")
-    return { kicker: `${item.kind} evidence`, title: item.title, tone: "info", summary: item.observation, facts: [["Evidence ID", item.id], ["Backend", item.source], ["Observed", item.observedAt], ["Trust", item.trust]], code: item.query, note: "This item belongs to the sealed Evidence Set and can be cited by Hypotheses, reviews, and gates." }
+    return { kicker: `${item.kind} evidence`, title: item.title, tone: "info", summary: item.observation, facts: [["Evidence ID", item.id], ["Backend", item.source], ["Observed", item.observedAt], ["Trust", item.trust]], code: item.query }
   }
   if (kind === "call") {
     const call = run.fusion.calls.find((entry) => entry.id === id)
     if (!call) return selectedRecord(run, "run")
-    return { kicker: `Fusion ${call.role}`, title: call.title, tone: "success", summary: call.output, facts: [["Model", call.model], ["Status", call.status], ["Duration", call.duration], ["Tokens", call.tokens], ["Tool calls", call.tools]], note: call.role === "Synthesizer" ? "This output became the durable Diagnose-stage input." : "This output remains available for inspection and did not enter later model context directly." }
+    return { kicker: `Fusion ${call.role}`, title: call.title, tone: "success", summary: call.output, facts: [["Model", call.model], ["Status", call.status], ["Duration", call.duration], ["Tokens", call.tokens], ["Tool calls", call.tools]] }
   }
   if (kind === "check") {
     const check = run.checks.find((entry) => entry.id === id)
     if (!check) return selectedRecord(run, "run")
-    return { kicker: `${check.kind} ${check.id}`, title: check.name, tone: toneFor(check.result), summary: check.detail, facts: [["Result", check.result], ["Agent", check.actor], ["Tool", check.tool], ["Duration", check.duration], ["Receipt", check.receipt], ["Candidate", run.candidate]], note: "The deterministic receipt owns pass or fail. The agent records the report and cannot override the result." }
+    return { kicker: `${check.kind} ${check.id}`, title: check.name, tone: toneFor(check.result), summary: check.detail, facts: [["Result", check.result], ["Agent", check.actor], ["Tool", check.tool], ["Receipt", check.receipt]] }
   }
   if (kind === "gate") {
     const fact = run.gate.facts.find((entry) => entry.id === id)
     if (!fact) return selectedRecord(run, "run")
-    return { kicker: `Release Gate fact ${fact.id}`, title: fact.label, tone: toneFor(fact.result), summary: fact.result === "passed" ? "The fact passed against recorded evidence." : "The gate never ran because Verification failed.", facts: [["Result", fact.result], ["Evidence", fact.evidence], ["Policy", run.policy], ["Approval", run.gate.approval]], note: "Gate facts are deterministic. Model confidence cannot satisfy them." }
+    return { kicker: `Release Gate fact ${fact.id}`, title: fact.label, tone: toneFor(fact.result), summary: fact.result === "passed" ? "The fact passed against recorded evidence." : "The gate never ran because Verification failed.", facts: [["Result", fact.result], ["Evidence", fact.evidence], ["Policy", run.policy], ["Approval", run.gate.approval]] }
   }
   if (kind === "file") {
     const file = run.files.find((entry) => entry.id === id)
     if (!file) return selectedRecord(run, "run")
-    return { kicker: "Changed file", title: file.path, tone: "info", summary: `${file.additions} additions and ${file.deletions} deletions in ${run.pr.number}.`, facts: [["Base", run.baseCommit], ["Head", run.headCommit], ["Candidate", run.candidate], ["Branch", run.branch]], note: "The change-to-Hypothesis map binds this file to H1 and cited Evidence Set items E2 and E4." }
+    return { kicker: "Changed file", title: file.path, tone: "info", summary: `${file.additions} additions and ${file.deletions} deletions in ${run.pr.number}.`, facts: [["Base", run.baseCommit], ["Head", run.headCommit], ["Branch", run.branch]] }
   }
   if (kind === "pr") {
-    return { kicker: "Source-host record", title: `${run.pr.number} ${run.pr.title}`, tone: run.pr.tone, summary: `${run.pr.state}. ${run.pr.checks}; ${run.pr.reviews}.`, facts: [["Repository", run.repository], ["Branch", run.branch], ["Head", run.headCommit], ["Merge", run.pr.mergedAt], ["Link", run.pr.url]], note: "This target view assumes a real source-host integration. The current saved-run contract records only a PR-shaped adapter receipt." }
+    return { kicker: "Source-host record", title: `${run.pr.number} ${run.pr.title}`, tone: run.pr.tone, summary: `${run.pr.state}. ${run.pr.checks}; ${run.pr.reviews}.`, facts: [["Repository", run.repository], ["Branch", run.branch], ["Head", run.headCommit], ["Merge", run.pr.mergedAt], ["Link", run.pr.url]] }
   }
   if (kind === "watch") {
-    return { kicker: "Release and Watch", title: run.watch.status, tone: toneFor(run.watch.status === "Passed" ? "passed" : "not-run"), summary: run.key === "verified" ? `Payment error ratio moved from ${run.watch.before} to ${run.watch.after}.` : "The run stopped at Verify. No candidate entered production.", facts: [["Production", run.production], ["Stages", String(run.watch.stages.length)], ["Stop rules", run.watch.stopRules.join(" · ")], ["Recovery", run.recovery.id]], note: run.key === "verified" ? "All saved samples and probe receipts passed the frozen Watch plan." : "T13 rehearsal remains available, but it is not a production Watch Report." }
+    return { kicker: "Release and Watch", title: run.watch.status, tone: toneFor(run.watch.status === "Passed" ? "passed" : "not-run"), summary: run.key === "verified" ? `Payment error ratio moved from ${run.watch.before} to ${run.watch.after}.` : "The run stopped at Verify. No candidate entered production.", facts: [["Production", run.production], ["Stages", String(run.watch.stages.length)], ["Stop rules", run.watch.stopRules.join(" · ")], ["Recovery", run.recovery.id]] }
   }
   if (kind === "recovery") {
-    return { kicker: "Recovery Point", title: run.recovery.status, tone: toneFor(run.recovery.status), summary: run.recovery.rollback, facts: [["Recovery Point", run.recovery.id], ["Coverage", run.recovery.coverage], ["Drill", run.recovery.drill], ["Production", run.production]], note: "Rollback is a guarded action. This captured run is read-only and does not execute it." }
+    return { kicker: "Recovery Point", title: run.recovery.status, tone: toneFor(run.recovery.status), summary: run.recovery.rollback, facts: [["Recovery Point", run.recovery.id], ["Coverage", run.recovery.coverage], ["Drill", run.recovery.drill], ["Production", run.production]] }
   }
   if (kind === "hypothesis") {
-    return { kicker: "Accepted Hypothesis", title: "H1 · Card-type branch inversion", tone: "success", summary: run.cause, facts: [["Supporting evidence", "E2, E3, E4"], ["Opposing evidence", "none unresolved"], ["Prediction", "valid Visa unit case fails before Remediation"], ["Gate", "8/8 acceptance checks passed"]], note: "The Orchestrator accepted H1 because its registered prediction reproduced. Fusion ranking alone could not accept it." }
+    return { kicker: "Accepted Hypothesis", title: "H1 · Card-type branch inversion", tone: "success", summary: run.cause, facts: [["Supporting evidence", "E2, E3, E4"], ["Opposing evidence", "none unresolved"], ["Prediction", "valid Visa unit case fails before Remediation"], ["Gate", "8/8 acceptance checks passed"]] }
   }
   return selectedRecord(run, "run")
 }
@@ -138,7 +136,6 @@ export function inspectorContent(run, key = "run") {
     <p class="vr-inspector-summary">${record.summary}</p>
     ${factRows(record.facts)}
     ${record.code ? `<pre class="vr-detail-code"><code>${record.code}</code></pre>` : ""}
-    <p class="vr-inspector-note">${record.note}</p>
     <div class="vr-inspector-actions"><button class="btn" type="button" data-copy="${record.title}">${icon("copy")} Copy reference</button><button class="btn ghost" type="button" data-toggle-raw aria-expanded="false">${icon("code")} Show raw record</button></div>
     <pre class="vr-detail-code" data-raw-record hidden><code>${rawRecord}</code></pre>
   </div>`

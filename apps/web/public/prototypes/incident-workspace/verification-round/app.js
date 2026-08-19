@@ -1,7 +1,7 @@
-import { runFromQuery } from "./data.js?rev=20260819-3"
-import { traceableBrief } from "./variant-traceable-brief.js?rev=20260819-3"
-import { runChronicle } from "./variant-run-chronicle.js?rev=20260819-3"
-import { changeReview } from "./variant-change-review.js?rev=20260819-3"
+import { runFromQuery } from "./data.js?rev=20260819-5"
+import { traceableBrief } from "./variant-traceable-brief.js?rev=20260819-5"
+import { runChronicle } from "./variant-run-chronicle.js?rev=20260819-5"
+import { changeReview } from "./variant-change-review.js?rev=20260819-5"
 
 const variantModules = [traceableBrief, runChronicle, changeReview]
 const variants = variantModules.map((variant) => () => variant.render(runFromQuery()))

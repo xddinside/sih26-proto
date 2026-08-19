@@ -1,5 +1,5 @@
-import { runs } from "./data.js?rev=20260819-3"
-import { appHeader, badge, bindCommon, icon, inspector, runMeta } from "./shared.js?rev=20260819-3"
+import { runs } from "./data.js?rev=20260819-5"
+import { appHeader, badge, bindCommon, icon, inspector, runMeta } from "./shared.js?rev=20260819-5"
 
 const stages = ["Detect", "Diagnose", "Repair", "Verify", "Release", "Watch"]
 
@@ -24,7 +24,7 @@ function render(active = "verified") {
     <main id="workspace-main" class="rc-page">
       <section class="rc-titlebar">
         <div><div class="vr-breadcrumb"><span>Incidents</span>${icon("chevron")}<strong>${run.shortId}</strong></div><div class="badges">${badge(run.state, run.stateTone)}${badge(run.severity, "danger")}${badge("Captured timeline", "info")}</div><h1>${run.title}</h1><p>${run.lead}</p></div>
-        <div class="rc-outcome"><span>${run.key === "blocked" ? "Stopped at" : "Completed"}</span><strong>${run.key === "blocked" ? "Verify" : "Watch"}</strong><small>${run.duration} total</small></div>
+        <div class="vr-stat"><span class="vr-stat-label">${run.key === "blocked" ? "Stopped at" : "Completed"}</span><strong class="vr-stat-value">${run.key === "blocked" ? "Verify" : "Watch"}</strong><small class="vr-stat-note">${run.duration} total</small></div>
       </section>
       ${runMeta(run)}
       <div class="rc-workspace">
@@ -40,10 +40,10 @@ function render(active = "verified") {
         </aside>
 
         <section class="rc-stream" aria-labelledby="activity-title">
-          <div class="rc-stream-head"><div><p class="eyebrow">Journal, agents, tools, and gates</p><h2 id="activity-title">Run activity</h2></div><span class="tiny muted" data-event-count>${run.events.length} events</span></div>
+          <div class="rc-stream-head"><h2 id="activity-title">Run activity</h2><span class="tiny muted" data-event-count>${run.events.length} events</span></div>
           <div class="rc-controls">
             <label class="rc-search">${icon("search")}<span class="sr-only">Search run activity</span><input type="search" placeholder="Search activity" data-activity-search autocomplete="off"></label>
-            <div class="rc-filters" aria-label="Filter activity">
+            <div class="vr-seg" aria-label="Filter activity">
               <button class="active" type="button" data-kind="all" aria-pressed="true">All</button>
               <button type="button" data-kind="agent" aria-pressed="false">Agents</button>
               <button type="button" data-kind="tool" aria-pressed="false">Tools</button>
@@ -56,7 +56,7 @@ function render(active = "verified") {
               <span class="rc-event-time">${event.time}</span>
               <span class="rc-event-line" aria-hidden="true"><i class="${event.status}">${icon(eventIcon(event.kind))}</i>${index < run.events.length - 1 ? "<b></b>" : ""}</span>
               <button class="rc-event" type="button" data-inspect="event:${event.id}" aria-pressed="false">
-                <span class="rc-event-top"><span><b>${event.stage}</b><small>${event.actor}</small></span>${badge(event.status === "failed" ? "Failed" : "Recorded", event.status === "failed" ? "danger" : "neutral")}</span>
+                <span class="rc-event-top"><span><b>${event.stage}</b><small>${event.actor}</small></span>${event.status === "failed" ? badge("Failed", "danger") : ""}</span>
                 <strong>${event.title}</strong><p>${event.summary}</p><span class="rc-event-ref">${event.ref}${icon("chevron")}</span>
               </button>
             </li>`).join("")}
@@ -66,7 +66,7 @@ function render(active = "verified") {
 
         <div class="rc-detail-column">
           ${inspector(run, "run", "Activity detail")}
-          <section class="rc-agent-summary" aria-labelledby="agents-title"><div class="rc-mini-head"><h2 id="agents-title">Agent calls</h2><span>4</span></div>${run.fusion.calls.map((call) => `<button type="button" data-inspect="call:${call.id}" aria-pressed="false"><span>${icon("agent")}<strong>${call.role}</strong></span><small>${call.duration} · ${call.tokens} tokens</small></button>`).join("")}</section>
+          <section class="rc-agent-summary" aria-labelledby="agents-title"><div class="vr-side-head"><h2 id="agents-title">Agent calls</h2></div>${run.fusion.calls.map((call) => `<button type="button" data-inspect="call:${call.id}" aria-pressed="false"><span>${icon("agent")}<strong>${call.role}</strong></span><small>${call.duration} · ${call.tokens} tokens</small></button>`).join("")}</section>
         </div>
       </div>
     </main>
