@@ -85,6 +85,78 @@ and `--run-wall-clock-ms` to lower the bounded rehearsal budgets. Rehearsal
 output cannot be promoted by `finalize`; only completed real full-capture
 runs are presentation-eligible.
 
+### Deterministic full capture (issue #30)
+
+The full-capture integration slice: both scenarios run end to end through
+actual Pi role sessions using the deterministic streaming provider double,
+starting from the seeded Signals and Incident Trigger (never a frozen
+Evidence Set). The deterministic provider streams responses and tool calls
+through the same Model Gateway transport contract as a real provider; every
+role executes through the Pi runtime with typed tools, and the Control Plane
+owns every gate, transition, receipt, and terminal state.
+
+```sh
+bun run capture.ts run --run 1 --agents real --mode full-capture --provider deterministic
+bun run capture.ts run --run 2 --agents real --mode full-capture --provider deterministic
+```
+
+Deterministic full captures are network-free and mark their capture manifest
+`provider_class: fixture` / `provider: deterministic`: they are explicitly
+development fixtures. Their exported bundles pass the saved-bundle verifier
+and replay offline, but they are never presentation-eligible and cannot be
+promoted by `finalize` or `present`. A failed deterministic full capture is
+retained in the append-only dev store with its partial artifacts.
+
+The full Incident Run respects the finite 120-minute wall-clock limit and
+the per-role/lifecycle limits for every real-agent capture (rehearsal and
+full-capture alike); `--model-turns`, `--non-terminal-tool-calls`,
+`--session-wall-clock-ms`, and `--run-wall-clock-ms` lower the bounded
+budgets for tests and fast iteration.
+
+### Presentation selection and freeze (issue #31)
+
+Real-agent captures append to the append-only development store at
+`dev-runs/dev-store.jsonl` (each run's journal and artifacts under
+`dev-runs/runs/...`). Presentation finalization (`capture.ts present`)
+selects from that store and never runs, calls, or rewrites it:
+
+- **Manifest identity.** Every completed capture seals a v1.2 capture
+  manifest that freezes the provider class and slug, model, reasoning level,
+  exact `pi-agent-core`/`pi-ai` versions, resolved provider catalog metadata,
+  skill-tree digest, tool-catalog and role-prompt revisions, policy revision,
+  Investigation Perspectives, seed digests, schema versions, and every
+  session/run/lifecycle budget. Its `manifest_digest` is the canonical
+  `contentHash` over the payload minus run identity.
+- **Frozen-config digest.** The dev-store record's `configDigest` hashes the
+  manifest's frozen fields (run identity excluded), so an identical
+  configuration yields an identical digest and any change to provider, model,
+  reasoning, Pi version, prompt, skill, tools, perspectives, policy, seed,
+  schema, or budget starts a new streak.
+- **Per-scenario streak.** Each scenario tracks its own consecutive streak:
+  eligible full-capture real runs under one unchanged `configDigest`. A
+  failed, incomplete, unexpected, deterministic-fixture, or differently
+  configured run breaks the streak.
+- **Eligibility.** A run is eligible only as a full-capture, real-provider
+  run with a sealed manifest, whose bundle verifies and carries every
+  required succeeded role. Run 1 is eligible only with its verified
+  Release/Watch outcome; Run 2 only with `verification-failed` / "Blocked
+  safely" and no Release.
+- **Selection.** A scenario becomes selectable after three consecutive
+  eligible runs under one digest; `present` needs both scenarios and
+  assembles the latest eligible run of each into `demo/saved-runs`, strictly
+  verified. Deterministic fixtures, rehearsals, and tampered bundles are
+  rejected even when their records and bundles otherwise verify.
+- **Provenance.** Every successful `present` appends a `selection` record to
+  the dev store naming the selected runs, their store paths, manifest
+  digests, and the frozen-config digests, so the bundle always traces back to
+  the append-only development store.
+
+```sh
+cd demo/capture
+bun run capture.ts store     # list the dev store and selection records
+bun run capture.ts present   # assemble + verify the presentation bundle
+```
+
 ### Live mode (reduced Compose profile, real firing numbers)
 
 Starts the reduced profile (`flagd`, `otel-collector`, `prometheus`,

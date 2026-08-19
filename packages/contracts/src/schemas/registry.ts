@@ -3,7 +3,7 @@
  *
  * Every wire schema this package ships is registered here by name and version.
  * Most artifact schemas are at `1.0`; the Orchestrator-aware journal and
- * capture manifest are at `1.1` with their `1.0` readers retained. A name absent from the registry is
+ * capture manifest are at `1.1`/`1.2` with their earlier readers retained. A name absent from the registry is
  * `UNKNOWN_SCHEMA`; a known name with an unsupported version is
  * `STALE_SCHEMA`. This registry is deliberately explicit: adding a schema is
  * a code change, not a runtime extension.
@@ -13,6 +13,7 @@ import type { JsonValue } from "../result.js";
 import {
   captureManifestSchema,
   captureManifestSchemaV1,
+  captureManifestSchemaV2,
   implementedDiffSchema,
   orchestratorReportSchema,
   remediationDraftSchema,
@@ -111,7 +112,7 @@ export const SCHEMA_REGISTRY = {
   "remediation-draft": versionMap(remediationDraftSchema),
   "implemented-diff": versionMap(implementedDiffSchema),
   "orchestrator-report": versionMap(orchestratorReportSchema),
-  "capture-manifest": { "1.0": captureManifestSchemaV1, "1.1": captureManifestSchema },
+  "capture-manifest": { "1.0": captureManifestSchemaV1, "1.1": captureManifestSchema, "1.2": captureManifestSchemaV2 },
   "agent-run-artifact": versionMap(agentRunArtifactSchema),
   "orchestrator-work-request": versionMap(orchestratorWorkRequestSchema),
   "orchestrator-lifecycle": versionMap(orchestratorLifecycleStateSchema),
@@ -122,7 +123,7 @@ export const SCHEMA_REGISTRY = {
 export type SchemaName = keyof typeof SCHEMA_REGISTRY;
 
 /** The supported schema version string. */
-export type SchemaVersion = "1.0" | "1.1";
+export type SchemaVersion = "1.0" | "1.1" | "1.2";
 
 /** Outcome of classifying a schema name/version pair. */
 export type SchemaClassification =

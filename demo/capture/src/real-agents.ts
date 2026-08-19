@@ -93,12 +93,16 @@ export interface RealAgentKitOptions {
     non_terminal_tool_calls: number
     session_wall_clock_ms: number
     run_wall_clock_ms: number
+    /** The lifecycle attempt budget the policy draft froze for this run. */
+    attempt_limit: number
   }
   schemaVersions: Record<string, string>
   scenario: string
   mode: "rehearsal" | "full-capture"
   providerClass?: "real" | "fixture"
   manifestProvider?: string
+  /** Resolved provider catalog metadata when the Gateway resolved it. */
+  providerMetadata?: CaptureManifest["provider_metadata"]
   orchestrator?: OrchestratorToolService
 }
 
@@ -357,7 +361,7 @@ export class RealAgentKit {
     scenario: string
   }): Promise<CaptureManifest> {
     const payload: CaptureManifest = {
-      schema_version: "1.1",
+      schema_version: "1.2",
       manifest_id: `capture-manifest:${options.incidentId}:${options.runId}`,
       incident_id: options.incidentId,
       run_id: options.runId,
@@ -383,6 +387,9 @@ export class RealAgentKit {
       budgets: this.options.budgets,
       schema_versions: this.options.schemaVersions,
       role_records: this.roleRecords(),
+      ...(this.options.providerMetadata === undefined
+        ? {}
+        : { provider_metadata: this.options.providerMetadata }),
       manifest_digest: "" as HashString,
       sealed_at: new Date().toISOString(),
     }
@@ -393,7 +400,7 @@ export class RealAgentKit {
     payload.manifest_digest = digest.value
     await this.sealSurface().seal({
       schemaId: "capture-manifest",
-      schemaVersion: "1.1",
+      schemaVersion: "1.2",
       payload,
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
     })

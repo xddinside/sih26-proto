@@ -46,11 +46,12 @@ import {
   SAVED_INCIDENT_2,
 } from "./src/constants.js"
 import {
-  DEV_STORE_FILE,
-  DEV_STORE_ROOT,
   appendCaptureRecord,
   configDigestOf,
+  devStoreFile,
+  devStoreRoot,
   listCaptureRecords,
+  manifestConfigDigestOf,
 } from "./src/dev-store.js"
 import { driveCapture, driverLogPath, liveReadAdapters, recordedReadAdapters } from "./src/driver.js"
 import type { CaptureReport, RealCaptureAgent } from "./src/driver.js"
@@ -117,7 +118,7 @@ async function retainPartialAttempt(
     })
     .catch(() => ({}))
   const runPath = join("runs", `${capturedAt.replace(/[:.]/g, "-")}-${run === 1 ? SAVED_INCIDENT_1 : SAVED_INCIDENT_2}-partial`)
-  const target = join(DEV_STORE_ROOT, runPath)
+  const target = join(devStoreRoot(), runPath)
   await mkdir(target, { recursive: true })
   await cp(stagingDir(run), target, { recursive: true, force: true }).catch(() => undefined)
   const failureReason = error instanceof Error ? error.message : String(error)
@@ -150,6 +151,7 @@ async function retainPartialAttempt(
     outcome: null,
     candidateHash: null,
     manifestSealed: false,
+    manifestDigest: null,
     agentRunArtifacts: 0,
     configDigest: configDigestOf({
       run,
@@ -348,7 +350,7 @@ async function exportRun(run: 1 | 2, savedId: string): Promise<void> {
  * before the normal export path can finish. The snapshot is intentionally
  * inspectable even when the incomplete journal cannot satisfy the completed
  * bundle verifier. */
-async function exportPartialRun(
+export async function exportPartialRun(
   run: 1 | 2,
   savedId: string,
   incidentId: string,
@@ -409,7 +411,7 @@ async function exportPartialRun(
 }
 
 /** Combine both staging dirs into demo/saved-runs and verify strictly. */
-async function finalize(): Promise<void> {
+export async function finalize(): Promise<void> {
   const staging1 = stagingDir(1)
   const staging2 = stagingDir(2)
   const files = new Map<string, string>()
@@ -498,7 +500,7 @@ async function verifyOnly(): Promise<void> {
   console.log(`[verify] demo/saved-runs passes all integrity checks (${verified.value.incidents.length} incidents, ${verified.value.artifacts.size} artifacts)`)
 }
 
-async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void> {
+export async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void> {
   // Long-running phases; leases and permits must not expire mid-stage.
   process.env.SIH_LEASE_TTL_SECONDS = "7200"
   process.env.SIH_PERMIT_TTL_SECONDS = "3600"
@@ -704,8 +706,8 @@ async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void>
   if (report.agents === "real") {
     const capturedAt = new Date().toISOString()
     const runPath = join("runs", `${capturedAt.replace(/[:.]/g, "-")}-${savedId}`)
-    await mkdir(join(DEV_STORE_ROOT, runPath), { recursive: true })
-    await cp(stagingDir(run), join(DEV_STORE_ROOT, runPath), { recursive: true })
+    await mkdir(join(devStoreRoot(), runPath), { recursive: true })
+    await cp(stagingDir(run), join(devStoreRoot(), runPath), { recursive: true })
     await appendCaptureRecord({
       version: 1,
       run,
@@ -723,16 +725,19 @@ async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void>
       outcome: report.outcome,
       candidateHash: report.candidateHash,
       manifestSealed: report.manifestSealed,
+      manifestDigest: report.manifest?.manifest_digest ?? null,
       agentRunArtifacts: report.agentRunArtifacts,
-      configDigest: configDigestOf({
-        run,
-        scenario: run === 1 ? "S1" : "S2",
-        agents: "real",
-        mode: options.mode,
-        provider: options.provider,
-        model: options.model,
-        reasoning: options.reasoning,
-      }),
+      configDigest: report.manifest === undefined || report.manifest === null
+        ? configDigestOf({
+            run,
+            scenario: run === 1 ? "S1" : "S2",
+            agents: "real",
+            mode: options.mode,
+            provider: options.provider,
+            model: options.model,
+            reasoning: options.reasoning,
+          })
+        : manifestConfigDigestOf(report.manifest),
       runPath,
       status: "completed",
       failureReason: report.failureReason,
@@ -758,7 +763,7 @@ import type { ReleaseAdapter, EvidenceRunner } from "./src/driver.js"
 type ReleaseAdapterLike = ReleaseAdapter
 type EvidenceRunnerLike = EvidenceRunner
 
-function recordedFacts(run: 1 | 2): CaptureFacts {
+export function recordedFacts(run: 1 | 2): CaptureFacts {
   return {
     seed: run === 1 ? "S1" : "S2",
     firingRatio: 0.92,
@@ -779,7 +784,7 @@ function recordedFacts(run: 1 | 2): CaptureFacts {
   }
 }
 
-function offlineAdapters(facts: CaptureFacts, run: 1 | 2): { releaseAdapter: ReleaseAdapterLike; evidenceRunner: EvidenceRunnerLike } {
+export function offlineAdapters(facts: CaptureFacts, run: 1 | 2): { releaseAdapter: ReleaseAdapterLike; evidenceRunner: EvidenceRunnerLike } {
   const releaseAdapter: ReleaseAdapterLike = {
     async startCandidate() {
       return { imageId: "candidate-digest" }
@@ -836,7 +841,7 @@ async function main(): Promise<void> {
   if (command === "run") {
     const run = Number(flagValue("--run") ?? "0")
     if (run !== 1 && run !== 2) {
-      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline] [--agents fixture|real] [--mode rehearsal|full] [--provider slug] [--model id] [--reasoning minimal|low|medium|high|xhigh]")
+      console.error("usage: capture.ts run --run 1|2 [--demo-repo path] [--skip-baseline] [--offline] [--agents fixture|real] [--mode rehearsal|full] [--provider slug] [--model id] [--reasoning minimal|low|medium|high|xhigh] [--model-turns n] [--non-terminal-tool-calls n] [--session-wall-clock-ms n] [--run-wall-clock-ms n]")
       process.exit(2)
     }
     const agents = (flagValue("--agents") ?? "fixture") as "fixture" | "real"
@@ -854,12 +859,8 @@ async function main(): Promise<void> {
       console.error("rehearsal mode requires --agents=real; use the frozen Evidence Set rehearsal path")
       process.exit(2)
     }
-    if (agents === "real" && mode === "full-capture" && provider === "deterministic") {
-      console.error("the deterministic provider is rehearsal-only; use --mode rehearsal")
-      process.exit(2)
-    }
-    if (mode === "rehearsal" && provider !== "deterministic" && provider !== "opencode-go") {
-      console.error("rehearsal --provider must be deterministic or opencode-go")
+    if (agents === "real" && provider !== "deterministic" && provider !== "opencode-go") {
+      console.error("--agents=real --provider must be deterministic or opencode-go")
       process.exit(2)
     }
     if (agents === "real" && provider !== "deterministic" && (process.env.OPENCODE_API_KEY ?? "").trim().length === 0) {
@@ -872,15 +873,40 @@ async function main(): Promise<void> {
       console.error("--reasoning must be minimal, low, medium, high, or xhigh")
       process.exit(2)
     }
+    const numberFlag = (name: string, fallback: number): number => {
+      const raw = flagValue(name)
+      if (raw === undefined) return fallback
+      const value = Number(raw)
+      if (!Number.isInteger(value) || value < 1) {
+        console.error(`${name} must be a positive integer`)
+        process.exit(2)
+      }
+      return value
+    }
+    const budgets = {
+      model_turns: numberFlag("--model-turns", 20),
+      non_terminal_tool_calls: numberFlag("--non-terminal-tool-calls", 32),
+      session_wall_clock_ms: numberFlag("--session-wall-clock-ms", 12 * 60_000),
+      run_wall_clock_ms: numberFlag("--run-wall-clock-ms", 120 * 60_000),
+    }
+    if (budgets.model_turns > 20 || budgets.non_terminal_tool_calls > 32 || budgets.session_wall_clock_ms > 12 * 60_000 || budgets.run_wall_clock_ms > 120 * 60_000) {
+      console.error("budgets exceed the hard Orchestrator limits")
+      process.exit(2)
+    }
+    // The deterministic provider double is network-free; a deterministic
+    // full capture starts from the seeded Signals and Incident Trigger
+    // (the recorded offline shape), never from a frozen Evidence Set.
+    const deterministicFullCapture = agents === "real" && provider === "deterministic" && mode === "full-capture"
     await captureRun(run as 1 | 2, {
       demoRepo,
       skipBaseline: args.includes("--skip-baseline"),
-      offline: mode === "rehearsal" || args.includes("--offline"),
+      offline: deterministicFullCapture || mode === "rehearsal" || args.includes("--offline"),
       agents,
       mode,
       provider,
       model: flagValue("--model") ?? "deepseek-v4-flash",
       reasoning,
+      budgets,
       frozenEvidence: mode === "rehearsal"
         ? await loadFrozenEvidenceSet(run as 1 | 2)
         : undefined,
@@ -962,7 +988,7 @@ async function main(): Promise<void> {
   }
   if (command === "store") {
     const records = await listCaptureRecords()
-    console.log(`[capture] dev store: ${DEV_STORE_FILE} (${records.length} records)`)
+    console.log(`[capture] dev store: ${devStoreFile()} (${records.length} records)`)
     for (const record of records) {
       console.log(
         `  ${record.capturedAt} ${record.run} ${record.scenario} ${record.agents} ${record.mode} ${record.provider}/${record.model} state=${record.finalRunState} outcome=${record.outcome ?? "-"} manifest=${record.manifestSealed ? "sealed" : "none"} digest=${record.configDigest.slice(0, 12)}`,
@@ -985,7 +1011,9 @@ async function main(): Promise<void> {
   process.exit(2)
 }
 
-void main().catch((error) => {
-  console.error(`[capture] fatal: ${(error as Error).message}`)
-  process.exit(1)
-})
+if (import.meta.main) {
+  void main().catch((error) => {
+    console.error(`[capture] fatal: ${(error as Error).message}`)
+    process.exit(1)
+  })
+}

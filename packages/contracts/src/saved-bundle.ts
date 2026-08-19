@@ -636,16 +636,10 @@ export function verifySavedBundle(
         ),
       );
     }
-    if (manifest.provider_class === "fixture" && manifest.mode === "full-capture") {
-      errors.push(
-        integrityError(
-          "MALFORMED_CONTRACT",
-          "capture manifest provider_class fixture is not presentation-acceptable",
-          contentHashValue,
-          { provider_class: manifest.provider_class },
-        ),
-      );
-    }
+    // A fixture full capture (deterministic provider double) is a valid,
+    // explicitly marked development fixture: it verifies and replays like any
+    // other bundle. Presentation eligibility is a selection-layer decision
+    // (finalize/present), never an integrity property of the bundle.
     for (const record of manifest.role_records) {
       const expectedSchema = TERMINAL_SCHEMA_BY_ROLE[record.role];
       if (record.artifact_ref !== undefined) {

@@ -24,11 +24,11 @@ function contentHashOf(payload: unknown): string {
   return result.value;
 }
 
-function envelope(schemaId: string, payload: unknown): Record<string, unknown> {
+function envelope(schemaId: string, payload: unknown, artifactSchemaVersion = "1.0"): Record<string, unknown> {
   return {
     schema_version: "1.0",
     artifact_schema_id: schemaId,
-    artifact_schema_version: "1.0",
+    artifact_schema_version: artifactSchemaVersion,
     content_hash: contentHashOf(payload),
     sealed_at: "2026-08-18T00:00:00Z",
     incident_id: INCIDENT,
@@ -38,9 +38,9 @@ function envelope(schemaId: string, payload: unknown): Record<string, unknown> {
   };
 }
 
-function putArtifact(files: Map<string, string>, schemaId: string, payload: unknown): string {
+function putArtifact(files: Map<string, string>, schemaId: string, payload: unknown, artifactSchemaVersion?: string): string {
   const hash = contentHashOf(payload);
-  files.set(`artifacts/sha256/${hash.slice("sha256:".length)}.json`, JSON.stringify(envelope(schemaId, payload)));
+  files.set(`artifacts/sha256/${hash.slice("sha256:".length)}.json`, JSON.stringify(envelope(schemaId, payload, artifactSchemaVersion)));
   return hash;
 }
 
@@ -215,14 +215,18 @@ describe("capture-manifest verification", () => {
     }
   });
 
-  test("rejects a fixture provider_class", () => {
-    const files = validBundle({ provider_class: "fixture" });
+  test("accepts a deterministic fixture full-capture bundle", () => {
+    // A fixture (deterministic provider double) full capture is a valid
+    // development fixture: it verifies and replays like any other bundle.
+    // Presentation eligibility is the selection layer's decision, not an
+    // integrity property.
+    const files = validBundle({
+      provider_class: "fixture",
+      provider: "deterministic",
+      mode: "full-capture",
+    });
     const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(codes(result)).toContain("MALFORMED_CONTRACT");
-      expect(messages(result).some((message) => message.includes("provider_class fixture"))).toBe(true);
-    }
+    expect(result.ok).toBe(true);
   });
 
   test("accepts a fixture provider_class for a rehearsal bundle", () => {
@@ -309,6 +313,90 @@ describe("capture-manifest verification", () => {
     if (!result.ok) {
       expect(codes(result)).toContain("MALFORMED_CONTRACT");
       expect(messages(result).some((message) => message.includes("does not match its envelope"))).toBe(true);
+    }
+  });
+});
+
+/** Capture-manifest v1.2 (issue #31) freezes the resolved provider metadata
+ * and the lifecycle attempt budget alongside the v1.1 identity fields. */
+describe("capture-manifest v1.2", () => {
+  const budgetsV12 = {
+    model_turns: 20,
+    non_terminal_tool_calls: 32,
+    session_wall_clock_ms: 720_000,
+    run_wall_clock_ms: 7_200_000,
+    attempt_limit: 3,
+  };
+
+  function manifestV12(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    const v10 = manifestPayload({ schema_version: "1.2", budgets: budgetsV12 });
+    const payload = {
+      ...v10,
+      provider_metadata: {
+        provider: "opencode-go",
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        base_url: "https://opencode-go.example",
+        reasoning: true,
+        input: ["text"],
+      },
+      ...overrides,
+    };
+    return { ...payload, manifest_digest: contentHashOf(Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "manifest_digest"))) };
+  }
+
+  /** A valid v1.2 bundle: the capture manifest is sealed at version 1.2. */
+  function validBundleV12(manifestOverrides: Partial<Record<string, unknown>> = {}): Map<string, string> {
+    const files = new Map<string, string>();
+    putArtifact(files, "remediation-draft", plannerDraft());
+    const events = journal();
+    files.set(`incidents/${INCIDENT}/journal.jsonl`, events.map((event) => `${JSON.stringify(event)}\n`).join(""));
+    putArtifact(files, "capture-manifest", manifestV12(manifestOverrides), "1.2");
+    const fileEntries: Record<string, { sha256: string; size: number }> = {};
+    for (const path of [...files.keys()].sort()) {
+      const bytes = files.get(path) ?? "";
+      fileEntries[path] = { sha256: `sha256:${sha256Hex(bytes)}`, size: new TextEncoder().encode(bytes).byteLength };
+    }
+    files.set(
+      "manifest.json",
+      JSON.stringify({
+        format_version: "1.0",
+        capture_time: EVAL,
+        incident_ids: [{ incident_id: INCIDENT, final_sequence: events.length }],
+        files: fileEntries,
+      }, null, 2),
+    );
+    return files;
+  }
+
+  test("accepts a v1.2 manifest with resolved provider metadata and attempt budget", () => {
+    const files = validBundleV12();
+    const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts a v1.2 manifest without provider metadata (not resolved)", () => {
+    const { provider_metadata: _omitted, ...withoutMetadata } = manifestV12();
+    const files = validBundleV12(withoutMetadata);
+    const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects a v1.2 manifest whose budgets omit the lifecycle attempt budget", () => {
+    const files = validBundleV12({ budgets: { model_turns: 20, non_terminal_tool_calls: 32, session_wall_clock_ms: 720_000, run_wall_clock_ms: 7_200_000 } });
+    const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(messages(result).some((message) => message.includes("budgets"))).toBe(true);
+    }
+  });
+
+  test("a v1.1 budget shape is rejected by the v1.2 reader", () => {
+    const files = validBundleV12({ schema_version: "1.1" });
+    const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(messages(result).some((message) => message.includes("capture-manifest"))).toBe(true);
     }
   });
 });

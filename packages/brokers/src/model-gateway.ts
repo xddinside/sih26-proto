@@ -409,6 +409,35 @@ export class ModelGateway {
     return new ModelGatewayError("STREAM_FAILED", `${provider}: ${scrubbed}`)
   }
 
+  /** The catalog metadata the provider resolved for a provider/model slug,
+   * or null when the pair does not resolve. This is the "resolved provider
+   * metadata" the capture manifest freezes; it is sanitized catalog data and
+   * never carries credentials or request secrets. */
+  resolveModelMetadata(
+    provider: string,
+    modelId: string,
+  ): {
+    provider: string
+    id: string
+    name: string
+    base_url: string
+    reasoning: boolean
+    input: string[]
+  } | null {
+    const resolved = getModel(provider as never, modelId as never)
+    if (resolved === undefined) {
+      return null
+    }
+    return {
+      provider: resolved.provider,
+      id: resolved.id,
+      name: resolved.name,
+      base_url: resolved.baseUrl,
+      reasoning: resolved.reasoning,
+      input: resolved.input,
+    }
+  }
+
   private scrub(text: string): string {
     let out = text
     if (this.apiKey !== undefined && this.apiKey.length > 0) {

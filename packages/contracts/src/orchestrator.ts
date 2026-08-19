@@ -3,7 +3,7 @@
  * runtime validation cannot silently drift apart. */
 import type { FromSchema } from "json-schema-to-ts"
 
-import { ARTIFACT_REF, STAGE_NAME, STAGE_STATUS } from "./schemas/defs.js"
+import { ARTIFACT_REF, STAGE_STATUS } from "./schemas/defs.js"
 
 export const ORCHESTRATOR_STAGES = [
   "detect",
