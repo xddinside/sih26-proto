@@ -9,6 +9,9 @@
  * surface before the session returns, exactly as the deterministic path
  * seals its artifacts.
  */
+import {
+  NO_CANDIDATE_HASH,
+} from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import type {
   ControlPlaneProposals,
 } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
@@ -25,6 +28,7 @@ import { runRealVerifyRound } from "../../../packages/pi-skills/src/verify/verif
 import type { VerifyRoundResult } from "../../../packages/pi-skills/src/verify/verify-real.js"
 import type { AssignedTestReceipt } from "../../../packages/pi-skills/src/tests/test-runner.js"
 import type {
+  EvidenceItem,
   OrchestratorReport,
   CaptureManifest,
   CaptureManifestRoleRecord,
@@ -159,7 +163,7 @@ export class RealAgentKit {
     return {
       gateway: this.options.gateway,
       lease,
-      candidateHash: "no-candidate-hash",
+      candidateHash: NO_CANDIDATE_HASH,
       seal: this.sealSurface(),
       model: this.options.model,
       providerClass: this.options.providerClass,
@@ -185,6 +189,7 @@ export class RealAgentKit {
     judgeId: string
     synthesizerId: string
     parentAgentId: string
+    items: readonly EvidenceItem[]
   }): Promise<FusionRoundResult> {
     const { lease } = this.requireSurface()
     const perspectives = options.participantIds.map((participantId, index) => {
@@ -198,6 +203,7 @@ export class RealAgentKit {
       revisionId: options.revisionId,
       task: options.task,
       brief: options.brief,
+      items: options.items,
       participantIds: options.participantIds,
       participantPerspectives: perspectives,
       judgeId: options.judgeId,
@@ -206,7 +212,7 @@ export class RealAgentKit {
       gateway: this.options.gateway,
       lease,
       readBroker: this.options.readBroker,
-      candidateHash: "no-candidate-hash",
+      candidateHash: NO_CANDIDATE_HASH,
       seal: this.sealSurface(),
       model: this.options.model,
       providerClass: this.options.providerClass,

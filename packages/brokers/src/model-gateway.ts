@@ -30,6 +30,7 @@ import {
 import type {Api, AssistantMessage, AssistantMessageEventStream, Context, Model, ThinkingLevel, ToolCall} from "@earendil-works/pi-ai";
 
 import type { ControlPlaneClient, LeaseRef, ModelRequest } from "./types.js"
+import { museStreamingProvider, resolveSupplementalModel } from "./opencode-go.js"
 
 export class ModelGatewayError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -92,6 +93,13 @@ export const piAiStreamingProvider: GatewayStreamingProvider = (
       "MISSING_API_KEY",
       `no provider key available for ${model.provider}`,
     )
+  }
+  // opencode-go muse models stream through a tolerant transport because their
+  // endpoint never sends a finish_reason; the pinned pi-ai transport rejects
+  // such streams (issue #32).
+  const supplemental = resolveSupplementalModel(request.model.provider, request.model.id)
+  if (supplemental !== undefined) {
+    return museStreamingProvider(request, supplemental, apiKey)
   }
   return streamSimple(
     model,
@@ -337,7 +345,7 @@ export class ModelGateway {
     const resolved = getModel(
       request.model.provider as never,
       request.model.id as never,
-    )
+    ) ?? resolveSupplementalModel(request.model.provider, request.model.id)
     if (resolved === undefined) {
       throw new ModelGatewayError(
         "UNKNOWN_MODEL",
@@ -424,7 +432,7 @@ export class ModelGateway {
     reasoning: boolean
     input: string[]
   } | null {
-    const resolved = getModel(provider as never, modelId as never)
+    const resolved = getModel(provider as never, modelId as never) ?? resolveSupplementalModel(provider, modelId)
     if (resolved === undefined) {
       return null
     }

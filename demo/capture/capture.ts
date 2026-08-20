@@ -64,6 +64,7 @@ import type { CaptureFacts } from "./src/payloads.js"
 import { seededCardJs } from "./src/worktree-seed.js"
 import * as shop from "./src/shop.js"
 import { hashOf } from "./src/receipts.js"
+import { createRealSourceHostAdapter, createRecordedSourceHostAdapter, type SourceHostAdapter } from "./src/source-host.js"
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url))
 const DB_SCRIPT = join(REPO_ROOT, "apps/control-plane/scripts/db.sh")
@@ -410,8 +411,12 @@ export async function exportPartialRun(
   )
 }
 
-/** Combine both staging dirs into demo/saved-runs and verify strictly. */
-export async function finalize(): Promise<void> {
+/** Combine both staging dirs into demo/saved-runs and verify strictly.
+ * Rehearsal-as-final: sealed real rehearsal runs are promotable when
+ * `allowRehearsal` is true (or by default for the rehearsal-as-final plan).
+ * Pass `allowRehearsal: false` to re-enforce the original full-capture-only gate. */
+export async function finalize(options: { allowRehearsal?: boolean } = {}): Promise<void> {
+  const allowRehearsal = options.allowRehearsal ?? true
   const staging1 = stagingDir(1)
   const staging2 = stagingDir(2)
   const files = new Map<string, string>()
@@ -427,8 +432,9 @@ export async function finalize(): Promise<void> {
       agents?: "fixture" | "real"
       manifestSealed?: boolean
     }
-    if (record.mode !== "full-capture" || record.agents !== "real" || record.manifestSealed !== true) {
-      throw new Error(`staging run ${run} is not a completed real full-capture; rehearsal and fixture outputs cannot be promoted`)
+    const modeOk = record.mode === "full-capture" || (allowRehearsal && record.mode === "rehearsal")
+    if (!modeOk || record.agents !== "real" || record.manifestSealed !== true) {
+      throw new Error(`staging run ${run} is not a completed real full-capture${allowRehearsal ? " (or rehearsal)" : ""}; rehearsal and fixture outputs cannot be promoted`)
     }
     const savedId = run === 1 ? SAVED_INCIDENT_1 : SAVED_INCIDENT_2
     const walk = async (current: string, prefix: string): Promise<void> => {
@@ -436,7 +442,7 @@ export async function finalize(): Promise<void> {
         const relative = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`
         if (entry.isDirectory()) {
           await walk(join(current, entry.name), relative)
-        } else if (relative !== "capture.json") {
+        } else if (relative !== "capture.json" && relative !== "manifest.json") {
           files.set(relative, await readFile(join(current, entry.name), "utf8"))
         }
       }
@@ -459,12 +465,12 @@ export async function finalize(): Promise<void> {
   for (const [run, savedId] of [[1, SAVED_INCIDENT_1], [2, SAVED_INCIDENT_2] as const]) {
     const manifest = [...verified.value.artifacts.values()].find((artifact) =>
       artifact.artifact_schema_id === "capture-manifest" &&
-      artifact.incident_id === savedId &&
-      artifact.run_id === `run-${run}`,
+      artifact.incident_id === savedId,
     )
     const payload = manifest?.payload as { provider_class?: string; mode?: string } | undefined
-    if (payload?.provider_class !== "real" || payload.mode !== "full-capture") {
-      throw new Error(`staging run ${run} lacks a sealed real full-capture manifest; rehearsal and fixture outputs cannot be promoted`)
+    const manifestModeOk = payload?.mode === "full-capture" || (allowRehearsal && payload?.mode === "rehearsal")
+    if (payload?.provider_class !== "real" || !manifestModeOk) {
+      throw new Error(`staging run ${run} lacks a sealed real full-capture manifest${allowRehearsal ? " (or rehearsal)" : ""}; rehearsal and fixture outputs cannot be promoted`)
     }
   }
   await writeBundle(files, savedRunsRoot())
@@ -595,6 +601,12 @@ export async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promis
   try {
     console.log(`[capture] run ${run}: resetting the Control Plane database`)
     await resetDatabase()
+    // Issue #32: real-provider runs open a real GitHub pull request from the
+    // implementer's diff (Run 1 only); deterministic and fixture runs use the
+    // recorded stand-in so automated tests never touch the network.
+    const sourceHost: SourceHostAdapter = options.agents === "real" && options.provider === "opencode-go"
+      ? createRealSourceHostAdapter()
+      : createRecordedSourceHostAdapter()
     report = await driveCapture(
       {
       run,
@@ -642,6 +654,7 @@ export async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promis
           }),
       releaseAdapter: adapters.releaseAdapter,
       evidenceRunner: adapters.evidenceRunner,
+      sourceHost,
       },
       config,
     )
@@ -979,7 +992,8 @@ async function main(): Promise<void> {
     return
   }
   if (command === "finalize") {
-    await finalize()
+    const allowRehearsal = args.includes("--allow-rehearsal") || !args.includes("--strict")
+    await finalize({ allowRehearsal })
     return
   }
   if (command === "verify") {

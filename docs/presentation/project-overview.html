@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Autonomous Incident Remediation — SIH 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --blue: #1a73e8;
+    --blue-dark: #174ea6;
+    --text: #202124;
+    --text-2: #5f6368;
+    --border: #dadce0;
+    --bg-card: #f8f9fa;
+    --bg-code: #202124;
+    --green: #137333;
+    --amber: #b06000;
+    --gray: #5f6368;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: #fff;
+    color: var(--text);
+    font-family: Roboto, system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 {
+    font-family: inherit;
+    font-weight: 400;
+    line-height: 1.3;
+    margin: 0;
+    color: var(--text);
+  }
+  h1 { font-size: 30px; }
+  h2 { font-size: 22px; margin-top: 2.2rem; }
+  h3 { font-size: 17px; font-weight: 500; margin-top: 1.6rem; }
+  p { margin: 0.6rem 0; color: var(--text); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: 'Roboto Mono', ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1em 0.3em;
+    color: var(--text);
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* Header */
+  header {
+    position: sticky; top: 0; z-index: 50;
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+  }
+  .header-inner {
+    max-width: 1180px; margin: 0 auto; padding: 0 24px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .product {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 15px; font-weight: 500; padding: 14px 0;
+  }
+  .product svg { width: 20px; height: 20px; fill: var(--blue); flex: 0 0 auto; }
+  .header-links { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .header-links a {
+    color: var(--text-2); font-size: 14px; padding: 8px 12px; border-radius: 4px;
+  }
+  .header-links a:hover { background: var(--bg-card); color: var(--text); text-decoration: none; }
+
+  /* Layout */
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 24px 80px; display: flex; gap: 32px; }
+  nav.side {
+    flex: 0 0 220px; position: sticky; top: 70px; align-self: flex-start;
+    font-size: 14px; max-height: calc(100vh - 90px); overflow-y: auto;
+  }
+  nav.side .group { font-size: 12px; color: var(--text-2); font-weight: 500; letter-spacing: 0.02em; margin: 16px 0 4px; padding: 0 12px; }
+  nav.side a {
+    display: block; color: var(--text-2); padding: 6px 12px; border-radius: 4px;
+  }
+  nav.side a:hover { background: var(--bg-card); color: var(--text); text-decoration: none; }
+  main { flex: 1 1 auto; min-width: 0; max-width: 860px; }
+
+  /* TOC */
+  .toc {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px; margin: 20px 0 8px; background: #fff;
+  }
+  .toc h3 { margin: 0 0 8px; font-size: 15px; font-weight: 500; }
+  .toc ol { margin: 0; padding-left: 22px; }
+  .toc li { margin: 3px 0; font-size: 14px; }
+
+  /* Summary box */
+  .summary {
+    border: 1px solid var(--border); border-left: 4px solid var(--blue);
+    border-radius: 8px; padding: 16px 20px; margin: 20px 0;
+    background: #fff;
+  }
+  .summary h3 { margin: 0 0 8px; font-size: 15px; font-weight: 500; }
+  .summary p { margin: 4px 0; font-size: 14px; }
+
+  /* Diagram */
+  .pipeline { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+  .lane { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+  .lane-label {
+    writing-mode: vertical-rl; transform: rotate(180deg);
+    font-size: 12px; font-weight: 500; color: var(--text-2);
+    padding: 4px 2px; flex: 0 0 auto; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .node {
+    flex: 1 1 0; min-width: 160px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; background: #fff;
+  }
+  .node .t { font-weight: 500; font-size: 14px; }
+  .node .d { font-size: 13px; color: var(--text-2); margin-top: 2px; }
+  .node.hl { border-color: var(--blue); background: #e8f0fe; }
+  .node.hl .t { color: var(--blue-dark); }
+  .arrow { align-self: center; color: var(--text-2); font-size: 16px; flex: 0 0 auto; }
+  @media (max-width: 760px) {
+    .arrow { display: none; }
+    .lane { flex-direction: column; }
+    .lane-label { writing-mode: horizontal-tb; transform: none; }
+    nav.side { display: none; }
+  }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; background: #fff; }
+  th {
+    text-align: left; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-2); background: var(--bg-card);
+    border-bottom: 1px solid var(--border); padding: 10px 14px;
+  }
+  td { border-bottom: 1px solid var(--border); padding: 10px 14px; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+
+  .pill {
+    display: inline-block; border-radius: 4px; padding: 2px 8px;
+    font-size: 12px; font-weight: 500; white-space: nowrap;
+  }
+  .pill.ok { background: #e6f4ea; color: var(--green); }
+  .pill.no { background: #fce8e6; color: #c5221f; }
+  .pill.warn { background: #fef7e0; color: var(--amber); }
+  .pill.info { background: #e8f0fe; color: var(--blue-dark); }
+  .pill.gray { background: #f1f3f4; color: var(--gray); }
+
+  ul.clean { margin: 0.6rem 0; padding-left: 24px; }
+  ul.clean li { margin: 4px 0; }
+
+  .note {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card);
+    padding: 12px 16px; font-size: 14px; margin: 14px 0;
+  }
+  .note b:first-child { color: var(--blue-dark); }
+
+  /* FAQ */
+  .q { font-weight: 500; margin: 1.2rem 0 0.2rem; font-size: 15px; }
+  .a { margin: 0; }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 20px 0 40px;
+    color: var(--text-2); font-size: 13px;
+    max-width: 1180px; margin: 0 auto; padding-left: 24px; padding-right: 24px;
+  }
+
+  @media print {
+    header, nav.side, .toc { display: none; }
+    .wrap { display: block; }
+    body { font-size: 11pt; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="product">
+      <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+      Autonomous Incident Remediation
+    </div>
+    <div class="header-links">
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#workflow">Workflow</a>
+      <a href="#safety">Safety</a>
+      <a href="#demonstration">Demonstration</a>
+      <a href="#status">Status</a>
+      <a href="#faq">FAQ</a>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="side">
+    <div class="group">Guides</div>
+    <a href="#overview">Overview</a>
+    <a href="#problem">Problem statement</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#workflow">Incident workflow</a>
+    <a href="#safety">Safety model</a>
+    <a href="#demonstration">Demonstration</a>
+    <a href="#status">Implementation status</a>
+    <a href="#stack">Technology stack</a>
+    <div class="group">Reference</div>
+    <a href="#faq">Frequently asked questions</a>
+    <a href="#rubric">Evaluation criteria</a>
+  </nav>
+
+  <main>
+    <h1>Autonomous Incident Remediation</h1>
+    <p>This document describes the Autonomous Incident Remediation project for the SIH 2026 internal hackathon. It covers the problem, the system design, the current implementation status, and the roadmap.</p>
+
+    <div class="toc">
+      <h3>In this document</h3>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#problem">Problem statement</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#workflow">Incident workflow</a></li>
+        <li><a href="#safety">Safety model</a></li>
+        <li><a href="#demonstration">Demonstration</a></li>
+        <li><a href="#status">Implementation status</a></li>
+        <li><a href="#stack">Technology stack</a></li>
+        <li><a href="#faq">Frequently asked questions</a></li>
+        <li><a href="#rubric">Evaluation criteria</a></li>
+      </ol>
+    </div>
+
+    <!-- ============ OVERVIEW ============ -->
+    <h2 id="overview">Overview</h2>
+    <p>
+      The system uses live operational evidence to diagnose incidents, perform permitted recovery work, and verify the result.
+      Evidence is telemetry from the running system: traces, metrics, logs, security findings, and deployment events.
+    </p>
+    <div class="summary">
+      <h3>Product summary</h3>
+      <p>Signals from a running system are converted into signed incident triggers. A Control Plane manages the incident lifecycle. One short-lived Worker per attempt hosts agent work: a Fusion diagnosis, a repair proposal, verification, and release. Deterministic gates and receipts decide acceptance, verification, and release. Model judgment does not.</p>
+      <p>Humans control the system through an Incident Workspace and through authority and policy settings.</p>
+    </div>
+    <p>Key properties of the system:</p>
+    <ul class="clean">
+      <li>Every decision is recorded in an append-only journal and can be replayed later.</li>
+      <li>Every test, review, gate, and release decision binds to the candidate content hash.</li>
+      <li>Workers have no credentials and no direct production access.</li>
+      <li>The presentation replays saved runs. Nothing runs live during the presentation.</li>
+    </ul>
+
+    <!-- ============ PROBLEM ============ -->
+    <h2 id="problem">Problem statement</h2>
+    <p>
+      Incident response has a high mean time to repair. Diagnosis is the slow part: evidence is scattered across monitoring
+      tools, hypotheses are formed by judgment, fixes are applied manually, and the reasoning behind a fix is not recorded.
+      Incidents recur because the record of what happened is incomplete.
+    </p>
+    <p>
+      AI coding agents do not address this directly. They produce patches, but confidence is not correctness. In production,
+      a wrong patch has the same blast radius as the original incident. Agents also lack an audit trail: after the fact, no one
+      can verify what the agent saw or did.
+    </p>
+    <p>The system separates the two concerns:</p>
+    <ul class="clean">
+      <li><b>Agents</b> investigate evidence, form hypotheses, and propose remediations.</li>
+      <li><b>Deterministic contracts</b> — gates, receipts, and journals — decide whether a proposal ships.</li>
+    </ul>
+    <p>
+      Beneficiaries are platform and site-reliability teams and any organization operating 24/7 services. The incident
+      workflow, the safety model, and the evidence replay are the product.
+    </p>
+
+    <!-- ============ ARCHITECTURE ============ -->
+    <h2 id="architecture">Architecture</h2>
+    <p>The system has four lanes: intake, run, decide, and surface.</p>
+
+    <div class="pipeline">
+      <div class="lane">
+        <div class="lane-label">Intake</div>
+        <div class="node"><div class="t">Signals</div><div class="d">OTel traces, metrics, logs, security findings, deployment events</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Incident Detector</div><div class="d">Prometheus-compatible rule; fires above a pinned threshold with a traffic floor</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Intake Normalizer</div><div class="d">HMAC-signs an IncidentTrigger v1 with incident_key, delivery_key, scope, window, evidence refs</div></div>
+        <div class="arrow">→</div>
+        <div class="node hl"><div class="t">Control Plane</div><div class="d">Deduplicates, opens or updates the incident, queues one serial run per attempt</div></div>
+      </div>
+      <div class="lane">
+        <div class="lane-label">Run</div>
+        <div class="node hl"><div class="t">Worker</div><div class="d">One per attempt; short-lived container; incident-scoped reads; no credentials</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Orchestrator</div><div class="d">Owns the stage workflow, delegates bounded work, chooses the next permitted step</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Specialist subagents</div><div class="d">Fusion participants, Judge, Synthesizer, repair planner and implementer, reviewers R1–R9, test layers T1–T13</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Brokers and tools</div><div class="d">Read-only data, isolated CI, candidate deployment ring; every call is leased and receipted</div></div>
+      </div>
+      <div class="lane">
+        <div class="lane-label">Decide</div>
+        <div class="node hl"><div class="t">Hypothesis Gate</div><div class="d">Eight fixed checks on cited evidence; accepts one hypothesis</div></div>
+        <div class="arrow">→</div>
+        <div class="node hl"><div class="t">Release Gate</div><div class="d">Eight non-optional facts before merge or deploy</div></div>
+        <div class="arrow">→</div>
+        <div class="node hl"><div class="t">Action Gate</div><div class="d">Typed operations only; one-use permit; risk class and authority mode check</div></div>
+        <div class="arrow">→</div>
+        <div class="node hl"><div class="t">Watch Gates G1–G6</div><div class="d">Frozen queries, limits, sample floors, missing-data rules; severe regression takes the rollback path</div></div>
+      </div>
+      <div class="lane">
+        <div class="lane-label">Surface</div>
+        <div class="node"><div class="t">Incident Workspace</div><div class="d">List, detail, panels 1–12, artifact viewer; every number cites a receipt or saved row</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Append-only journal</div><div class="d">Transitions, policy verdicts, approvals, leases, broker calls, Watch results, actor identity</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Sealed artifacts</div><div class="d">Content-hashed, schema-versioned; replay verifies the bundle and rejects tampering</div></div>
+        <div class="arrow">→</div>
+        <div class="node"><div class="t">Recovery Point</div><div class="d">Recorded state needed to reverse a remediation; rollback restores service, not every effect</div></div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>Ownership rule.</b> Agents own proposals and evidence gathering. The Control Plane and deterministic tools own
+      transitions, gates, receipts, candidate identity, and verdicts. A model cannot forge a receipt, re-scope applicability,
+      reinterpret a failure, or replace a gate.
+    </div>
+
+    <!-- ============ WORKFLOW ============ -->
+    <h2 id="workflow">Incident workflow</h2>
+    <p>
+      One attempt is one Orchestrator-led run through six stages in fixed order. Reaching the attempt limit (3 by default)
+      writes an Incident Report and closes the incident with the <code>attempt-limit</code> closure reason.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th style="width:110px">Stage</th><th>Behavior</th><th style="width:290px">Owner of pass/fail</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1. Detect</td>
+            <td>Confirm the symptom from live evidence; seal the Incident Brief. One retry, then <code>failed: undiagnosable</code>.</td>
+            <td>The brief is sealed before any agent runs.</td>
+          </tr>
+          <tr>
+            <td>2. Diagnose</td>
+            <td>Fusion Diagnosis: two or more independent participants inspect the same task, brief, and Evidence Set. A Judge compares outputs without picking a winner. A Synthesizer returns ranked hypotheses, gaps, and next actions. The Hypothesis Gate accepts one.</td>
+            <td>The gate checks cited coverage, causal edges, contradictions, alternative elimination, reproducible test, scope, freshness, and telemetry coverage. Table-driven, not model confidence.</td>
+          </tr>
+          <tr>
+            <td>3. Repair</td>
+            <td>Planner and implementer produce a Remediation Proposal v1: citation map, Recovery Point draft, declared surfaces, PR-shaped record. No merge or deploy.</td>
+            <td>Disposition (safe, guarded, barred) and class come from fixed rules. The Recovery Point covers every changed surface before the first mutation.</td>
+          </tr>
+          <tr>
+            <td>4. Verify</td>
+            <td>The applicability resolver selects required, conditional, and not-applicable checks. Each review role R1–R9 and test layer T1–T13 runs in its own skilled subagent. Results bind to the candidate hash.</td>
+            <td>The verdict function returns pass, fail, or needs-human. Consolidation rules: maximum severity, contradictions go to needs-human, no majority vote. Receipts own test facts.</td>
+          </tr>
+          <tr>
+            <td>5. Release</td>
+            <td>Code merges and deploys only past the Release Gate. Typed direct operations pass the Action Gate with a one-use permit. The Orchestrator submits; the Action Broker executes.</td>
+            <td>Eight fixed facts: reviewed commit, CI and security and regression checks, target version, mode and policy fit, frozen Watch plan, tested Recovery Point, no barred action, pipeline and approval rules.</td>
+          </tr>
+          <tr>
+            <td>6. Watch</td>
+            <td>A frozen plan runs per rollout stage: fixed queries, limits, sample floors, missing-data rules. Promotion only on pass. The confirmation window then closes the incident.</td>
+            <td>G1–G6 gate queries. Absence never counts as health. Severe regression freezes promotion and takes the pre-approved Recovery Point rollback path.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============ SAFETY ============ -->
+    <h2 id="safety">Safety model</h2>
+
+    <h3>Authority modes</h3>
+    <p>Authority modes are the capability ceiling. Only an operator can change them.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:110px">Mode</th><th>Permitted work</th></tr></thead>
+        <tbody>
+          <tr><td>Observe</td><td>Diagnosis and reporting only. No remediation.</td></tr>
+          <tr><td>Prepare</td><td>Ends at a merge-ready Remediation PR. No merge, no deploy.</td></tr>
+          <tr><td>Repair</td><td>Approved classes of remediation may merge and deploy after all gates pass.</td></tr>
+          <tr><td>Emergency</td><td>Pre-approved allow-list harm reduction only: rollback, restart, scale, reroute, disable. No new code, no general shell.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Automation policies</h3>
+    <p>Automation policies decide when a human must approve. Values:</p>
+    <ul class="clean">
+      <li><b>Review at all times.</b> Every action waits for a recorded human approval.</li>
+      <li><b>Autonomous at all times.</b> No approval needed within the mode's ceiling.</li>
+      <li><b>Scheduled hybrid.</b> IANA timezone plus weekly windows, evaluated at execution time. Policy and tzdb versions are recorded per verdict. Run 1 uses this policy.</li>
+    </ul>
+
+    <h3>Action-risk classes</h3>
+    <p>Companies may tighten a class; they cannot loosen a default.</p>
+    <ul class="clean">
+      <li><b>safe</b> — reversible; the Recovery Point covers every changed surface; no approval beyond policy.</li>
+      <li><b>guarded</b> — always needs a recorded human approval in every policy and mode; the mode may still deny it.</li>
+      <li><b>barred</b> — the product never executes; a human acts outside it.</li>
+    </ul>
+
+    <h3>Worker isolation</h3>
+    <ul class="clean">
+      <li>Short-lived container per attempt (gVisor Job in production, rootless Docker in the demo).</li>
+      <li>Incident-scoped reads. No credentials, no direct production access.</li>
+      <li>The model API key is held only by the Model Gateway. Workers receive a streaming transport.</li>
+      <li>Tools are allow-listed per role. Diagnose roles have no filesystem, shell, write, or web access.</li>
+    </ul>
+
+    <h3>Audit and replay</h3>
+    <ul class="clean">
+      <li>One append-only journal records proposals, policy verdicts, approvals, leases, broker calls, Watch results, and human overrides, each with actor identity and credential scope.</li>
+      <li>Secrets never enter the journal.</li>
+      <li>Every result binds to the candidate hash. Stale or unbound results are invalid.</li>
+      <li>Separation of duties: the approver differs from the executing service account; the policy editor cannot be the sole approver of a guarded action.</li>
+      <li>Replay verifies manifest hashes, journal sequence, schema, redaction, and freshness. Saved-run commands are rejected.</li>
+    </ul>
+
+    <h3>Budgets</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Limit</th><th>Production default</th><th>Demo Profile</th></tr></thead>
+        <tbody>
+          <tr><td>Attempts per incident</td><td>3</td><td>3 (kept)</td></tr>
+          <tr><td>Wall time per attempt</td><td>30 minutes</td><td>removed</td></tr>
+          <tr><td>Tokens and cost per attempt</td><td>capped at the Model Gateway</td><td>removed</td></tr>
+          <tr><td>Fusion rounds</td><td>3</td><td>removed</td></tr>
+          <tr><td>Revisions</td><td>2</td><td>2 (kept)</td></tr>
+          <tr><td>Worker restarts</td><td>2</td><td>2 (kept)</td></tr>
+          <tr><td>Approval expiry</td><td>30 min (5 min – 8 h configurable)</td><td>same</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The Demo Profile also keeps both gates, approvals, leases, cancel, cleanup, and host safety limits.</p>
+
+    <!-- ============ DEMONSTRATION ============ -->
+    <h2 id="demonstration">Demonstration</h2>
+    <p>
+      The full pipeline runs against the Astronomy Shop OpenTelemetry demo at a pinned commit, in Docker Compose. Two
+      incidents were captured live and exported as saved bundles: real signals, real seeded code defects, real test tools,
+      and real gates. The presentation replays the bundles in the Incident Workspace. Nothing runs live on stage.
+    </p>
+
+    <h3>Run 1 — verified code remediation</h3>
+    <p>
+      Seed S1 inverts one line in the Payment service's card-type check (<code>card.js</code>). Every charge fails. The
+      detector rule fires above the 0.20 threshold; the recorded error ratio is ≥ 0.9. The system diagnoses, proposes,
+      verifies, deploys behind a hybrid-window approval, and watches the ratio fall below 0.05 across three consecutive
+      samples. The incident resolves, then closes after the confirmation window. 93 journal events.
+    </p>
+    <p>
+      <span class="pill ok">real OTel signals</span>
+      <span class="pill ok">four hypotheses; gate eliminated three</span>
+      <span class="pill ok">one-line fix</span>
+      <span class="pill ok">hybrid approval recorded</span>
+      <span class="pill ok">probe ring 20/20</span>
+      <span class="pill ok">error ratio 0.9 → &lt;0.05</span>
+    </p>
+
+    <h3>Run 2 — deterministic failed verification</h3>
+    <p>
+      The same incident, seed S2: the card-type inversion plus a silently removed Luhn guard. The system writes the same
+      correct one-line fix. Verify rejects it: R1 records a <code>major</code> reachability finding, and the scoped T5
+      regression suite fails deterministically on the "Luhn-failing Visa is rejected" case. Nothing ships. The incident
+      stays open with 2 attempts remaining. 69 journal events.
+    </p>
+    <p>
+      <span class="pill ok">correct fix written</span>
+      <span class="pill no">reviewer found adjacent defect</span>
+      <span class="pill no">regression test failed</span>
+      <span class="pill no">Release Gate never ran</span>
+      <span class="pill ok">failed evidence joins the set</span>
+    </p>
+
+    <h3>Presentation kit</h3>
+    <ul class="clean">
+      <li>Incident Workspace: list, detail, panels 1–12 (intake, evidence, hypotheses, fusion, remediation, verify, gates, approvals, watch, policy, attempts, telemetry), audit tail, artifact viewer with provenance strips and disabled saved controls.</li>
+      <li>Replay verification: the saved bundle is verified in memory before rendering — manifest hashes, journal sequence, schema, redaction, freshness — and reports named integrity errors.</li>
+      <li>Twelve screenshots and two timed rehearsals (171 s each) against the captured bundle. A 2–3 minute script and an evidence kit live in <code>docs/presentation/</code>.</li>
+      <li>Accessibility and responsive checks pass: keyboard-only, 200% zoom, reduced motion, 1280 px and 390 px viewports.</li>
+    </ul>
+
+    <!-- ============ STATUS ============ -->
+    <h2 id="status">Implementation status</h2>
+
+    <h3>Built <span class="pill ok">closed</span></h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:230px">Milestone</th><th>Delivered</th></tr></thead>
+        <tbody>
+          <tr><td>Research reports (#2–#12)</td><td>Eleven settled reports: intake, orchestrator stages, Evidence Set and Hypothesis gate, review and verification matrix, worker isolation, authority and risk and budgets, company integration, Pi skill catalog, workspace, demo runs.</td></tr>
+          <tr><td>Contracts and fixtures (#16)</td><td>JSON Schema and TypeScript wire contracts, hashing, journal rules, saved-bundle verifier, byte-accurate fixture suite.</td></tr>
+          <tr><td>Frontend scaffold (#14), routes (#21), panels (#17)</td><td>TanStack Start + shadcn/ui; list, detail, and artifact routes; panels 1–12 with saved-truth rendering.</td></tr>
+          <tr><td>Demo environment (#18)</td><td>Compose overlay on the pinned Astronomy Shop commit; behavior-preserving <code>card.js</code> seam; seeds S1 and S2; pinned detector rule; reset scripts.</td></tr>
+          <tr><td>Control Plane, brokers, CI (#20)</td><td>State machine, append-only journal, trigger dedup, Policy Service, Hypothesis and Release and Action gates, HMAC webhooks, leases and permits, PostgreSQL and artifact store, Read and Action Brokers, local CI runner, git adapter.</td></tr>
+          <tr><td>Pi skills (#15)</td><td>Core: orchestrator, Fusion participant (×2), judge, synthesizer, repair planner and implementer. Reviews R1–R4, R8. Tests T1–T5, T7, T9, T10, T12, T13.</td></tr>
+          <tr><td>Release, Watch, capture (#19)</td><td>Two-step probe ring, frozen Watch plan G1–G6, capture and export pipeline, two live captured runs.</td></tr>
+          <tr><td>Replay, accessibility, rehearsal (#22)</td><td>Strict replay checks, keyboard and zoom and reduced-motion and responsive passes, twelve screenshots, two 171 s rehearsals, offline presentation.</td></tr>
+          <tr><td>Agents 1/9 (#24)</td><td>One Pi role proven end-to-end through the Model Gateway and Brokers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>In progress — real Pi agents during capture <span class="pill warn">open · #23, #25–#32</span></h3>
+    <p>
+      The two saved runs prove the deterministic pipeline with canned model-role inputs: Fusion receives structured
+      responses, repair returns canned plans, and review and test artifacts are assembled directly. The current phase
+      replaces those inputs with real Pi Agent Core sessions against a real model, under the same contracts, gates, and
+      trust boundary. Agents investigate, propose, and invoke permitted tools. They do not become the authority for
+      transitions, gates, test outcomes, receipts, or release decisions.
+    </p>
+    <p>Pinned: <code>@earendil-works/pi-agent-core</code> and <code>pi-ai</code> 0.79.4, OpenCode Go provider, <code>deepseek-v4-flash</code>, reasoning <code>high</code>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:150px">Issue</th><th>Scope</th><th style="width:90px">State</th></tr></thead>
+        <tbody>
+          <tr><td>#23 Spec</td><td>Real-agent execution path in the Demo Profile; role-session abstraction; typed terminal tools; model-use records; Model Gateway owns the key.</td><td><span class="pill warn">spec open</span></td></tr>
+          <tr><td>#25 Agents 2/9</td><td>Persist and replay agent sessions: ordered pipeline calls with pending, running, succeeded, failed, or aborted status; no secrets, no hidden chain-of-thought.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#26 Agents 3/9</td><td>Complete Fusion Diagnosis with real Pi participants, Judge, Synthesizer.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#27 Agents 4/9</td><td>Repair planning and implementation with Pi agents in a copy-on-write worktree.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#28 Agents 5/9</td><td>Verification with Pi reviewers (R1–R4, R8) and Test Agents (T1–T5, T7, T9, T10, T12, T13).</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#29 Agents 6/9</td><td>Pi Orchestrator and frozen-evidence rehearsals.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#30 Agents 7/9</td><td>Both scenarios complete through real Pi agents: Run 1 reaches verified remediation; Run 2 is blocked safely and never enters Release.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#31 Agents 8/9</td><td>Enforce presentation capture selection and freeze.</td><td><span class="pill warn">open</span></td></tr>
+          <tr><td>#32 Agents 9/9</td><td>Capture the accepted real-model presentation runs. Failed or imperfect runs remain honest, inspectable runs; canned output never replaces a failed run.</td><td><span class="pill warn">open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Solution Contract scope <span class="pill gray">pitch-only</span></h3>
+    <p>Fixed in the research reports and described in the Workspace as documentation. Not executed or claimed as implemented by the demo.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Surface</th><th>Scope</th></tr></thead>
+        <tbody>
+          <tr><td>Production deployment</td><td>Company-hosted Helm chart and <code>sihctl</code> CLI; gVisor-isolated Jobs; mTLS and cert-manager; OIDC roles; multi-region gateways; workload identity; production budgets enforced at the Model Gateway.</td></tr>
+          <tr><td>Adapters</td><td>GitHub App / GitLab, company CI/CD, approval systems, on-call and chat notifications.</td></tr>
+          <tr><td>Missing capability surface</td><td>Real rollback execution via recorded Recovery Points; reviews R5, R6, R7, R9; test layers T6, T8, T11; live controls (approve, deny, pause, cancel); live event stream (SSE); policy editor; audit search; budget editor; Emergency allow-list as a live control; tenancy, billing, retention, compliance, regional data rules.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============ STACK ============ -->
+    <h2 id="stack">Technology stack</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:200px">Layer</th><th>Choice</th></tr></thead>
+        <tbody>
+          <tr><td>Runtime and toolchain</td><td>Bun, Turbo, Vite, TypeScript 6. Every dependency pinned in one lockfile. A fresh clone passes typecheck, lint, build, and tests.</td></tr>
+          <tr><td>Frontend</td><td>TanStack Start + shadcn/ui (Sera style, Mist theme, DM Sans and Raleway, Tabler icons, Base UI).</td></tr>
+          <tr><td>Signals</td><td>OpenTelemetry traces and span metrics, Prometheus-compatible ruler, Alertmanager, OpenFeature / flagd.</td></tr>
+          <tr><td>Runtime environment</td><td>Docker Compose overlay on the pinned Astronomy Shop commit; one rootless Docker container per attempt.</td></tr>
+          <tr><td>Agents</td><td>Pi Agent Core / Pi AI 0.79.4 (pinned), OpenCode Go provider, <code>deepseek-v4-flash</code>, reasoning high. The Model Gateway owns the API key.</td></tr>
+          <tr><td>Contracts and integrity</td><td>JSON Schema and TypeScript wire contracts, SHA-256 content hashing, sealed artifact envelopes, append-only journal.</td></tr>
+          <tr><td>Deterministic controls</td><td>Hypothesis Gate (8 checks), Release Gate (8 facts), Action Gate (one-use permits), Watch G1–G6, verdict functions.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Monorepo layout: <code>apps/web</code> (Workspace), <code>apps/control-plane</code> (state machine, journal, gates), <code>packages/contracts</code> (schemas, hashing, verifier), <code>packages/pi-skills</code> (core, reviews, tests), <code>packages/ui</code>, <code>demo/</code> (compose, seeds, capture, ci, saved-runs, replay, fixtures), <code>docs/</code> (research reports, ADRs, presentation kit).</p>
+
+    <!-- ============ FAQ ============ -->
+    <h2 id="faq">Frequently asked questions</h2>
+
+    <p class="q">Did the demo run live?</p>
+    <p class="a">No. Two runs were captured live earlier. The presentation replays the saved journal and sealed artifacts in the Incident Workspace. Nothing runs live on stage.</p>
+
+    <p class="q">How is this different from a coding agent or an auto-patching tool?</p>
+    <p class="a">Coding agents produce code. This system adds a workflow and safety layer around them. Agents propose; deterministic gates decide. Every claim is a receipt bound to a content hash. Every external action is a typed, leased, one-use permit. Every decision is in an append-only journal. Run 2 demonstrates the difference: the AI wrote a correct patch and the system refused to ship it.</p>
+
+    <p class="q">What stops the AI from causing damage?</p>
+    <p class="a">Six layers: a short-lived worker with no credentials and no production access; authority modes that cap what can be attempted; action-risk classes, where barred actions never execute; three deterministic gates; Recovery Points recorded before any mutation with a pre-approved rollback path; and mandatory human approval for guarded, irreversible, or weakly recoverable changes.</p>
+
+    <p class="q">What happens when the diagnosis is wrong?</p>
+    <p class="a">A wrong diagnosis fails the Hypothesis Gate's eight checks. If one passes, Verify still runs every applicable review and test against the candidate hash. Run 2 shows a correct hypothesis being blocked because the surrounding code was unsafe. After 3 attempts, the Incident Report records the evidence, hypotheses, actions, and results, and the incident closes with the <code>attempt-limit</code> reason.</p>
+
+    <p class="q">Where do humans fit?</p>
+    <p class="a">Humans set authority modes and policies, approve guarded and out-of-window actions, inspect everything in the Workspace, and handle barred actions. The system does not replace engineers; it compresses mean time to repair for evidence-led cases and leaves a replayable record.</p>
+
+    <p class="q">How would a company adopt this?</p>
+    <p class="a">As a company-hosted Helm chart and <code>sihctl</code> inside its own Kubernetes. It consumes the company's pipeline, CI/CD, approvals, and deployment environments as authoritative records through adapters. Telemetry enters through the product's OTel path or an existing gateway. The Workspace is an evidence and control surface, not a replacement for Grafana, Jaeger, or CI.</p>
+
+    <p class="q">How do we know the evidence is real?</p>
+    <p class="a">Every artifact is content-hashed and schema-versioned. Every number on screen cites a saved row or receipt. The replay verifier checks manifest hashes, journal sequence, redaction, and freshness before rendering anything, and saved controls cannot submit. Receipts come from brokers and deterministic tools, not from the model.</p>
+
+    <p class="q">What is left to do?</p>
+    <p class="a">Two scopes. Now: replace the canned model-role inputs in the two captured runs with real Pi agents end-to-end (issues #25–#32; the first role is proven at #24). After the hackathon: the Solution Contract — production deployment, real adapters, real rollback execution, the remaining review and test skills, and live controls.</p>
+
+    <p class="q">Which claims should the team not make?</p>
+    <p class="a">No live agent on stage. No rollback demo run; automatic rollback is contract scope only. No percentage-based canary; the demo uses a two-step probe ring. No production installation, adapters, or <code>sihctl</code>. The saved runs are deterministic-pipeline captures; the real-agent captures are the current open phase.</p>
+
+    <!-- ============ RUBRIC ============ -->
+    <h2 id="rubric">Evaluation criteria</h2>
+    <p>The project addresses the four SIH evaluation parameters as follows.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:260px">Parameter (weight)</th><th>Evidence</th></tr></thead>
+        <tbody>
+          <tr><td>Problem Understanding &amp; Impact (25%)</td><td>The bottleneck is scoped to diagnosis time and judgment rather than fix time. Two saved runs show both the fix path and the safety path. The audit and replay story addresses recurring incidents and knowledge loss.</td></tr>
+          <tr><td>Innovation &amp; Technical Excellence (30%)</td><td>Fusion Diagnosis (independent participants, non-voting Judge, Synthesizer); deterministic gates and receipts that remove AI authority; content-hashed sealed artifacts with tamper-evident replay; risk-classed actions with one-use permits; authority-mode and policy dials.</td></tr>
+          <tr><td>Feasibility, Practicability &amp; Scalability (25%)</td><td>The system runs on the real Astronomy Shop stack today. The production path — Helm, gVisor, adapters, budgets — is designed in detail. Isolation and budgets cap cost per incident. The company pipeline remains authoritative, so adoption does not replace existing controls.</td></tr>
+          <tr><td>Solution Quality &amp; Presentation (20%)</td><td>Working prototype with two captured runs, offline replay, twelve screenshots, two rehearsed 2–3 minute scripts. Every number is receipt-backed. Contract scope is never claimed as built. Accessibility and responsive checks pass.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
+</div>
+
+<footer>
+  <p>Sources: <code>docs/research/</code>, <code>docs/build-handoff.md</code>, <code>docs/presentation/</code>, and the open issue tracker. Status as of 2026-08-18.</p>
+</footer>
+
+</body>
+</html>

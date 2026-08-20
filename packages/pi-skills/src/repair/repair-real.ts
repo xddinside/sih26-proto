@@ -24,6 +24,8 @@ import type { ModelGateway, LeaseRef, ReadBroker } from "@sih/brokers"
 import type { ImplementedDiff, RemediationDraft } from "@sih/contracts/types"
 import type { ThinkingLevel } from "@earendil-works/pi-ai"
 
+import { NO_CANDIDATE_HASH } from "../orchestrator/orchestrator.js"
+
 import type {
   AgentSessionKit,
   AgentSessionRecord,
@@ -120,7 +122,7 @@ export async function runRealRepairRound(
   const kit: AgentSessionKit = {
     gateway: options.gateway,
     lease: options.lease,
-    candidateHash: "no-candidate-hash",
+    candidateHash: NO_CANDIDATE_HASH,
     seal: options.seal,
     model: options.model,
     providerClass: options.providerClass,

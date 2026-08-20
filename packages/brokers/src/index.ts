@@ -23,3 +23,10 @@ export type {
 export { HttpControlPlaneClient, FakeControlPlaneClient, contentHashOf } from "./cp-client.js"
 export type { ControlPlaneClient, LeaseRef, ReadRequest, ReadResult, ActionRequest, ModelRequest, BrokerOutcome } from "./types.js"
 export { readReceipt, actionReceipt, ciReceipt, testReceipt } from "./receipts.js"
+export {
+  SUPPLEMENTAL_MODELS,
+  resolveSupplementalModel,
+  isMuseStreamingModel,
+  museStreamingProvider,
+} from "./opencode-go.js"
+export type { SupplementalModelEntry } from "./opencode-go.js"

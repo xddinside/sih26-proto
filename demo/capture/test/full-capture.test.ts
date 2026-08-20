@@ -53,6 +53,7 @@ import {
   selectPresentationStreak,
 } from "../src/dev-store.js"
 import { seededCardJs } from "../src/worktree-seed.js"
+import { createRecordedSourceHostAdapter } from "../src/source-host.js"
 
 const TEST_DATABASE_URL = "postgres://sih:sih@127.0.0.1:5433/sih_test_full_capture"
 
@@ -141,6 +142,7 @@ async function runCapture(
       watchWindowMs: options.watchWindowMs ?? 5,
       onFailure: options.onFailure,
       signal: options.signal ?? preAborted?.signal,
+      sourceHost: createRecordedSourceHostAdapter(),
     },
     loadConfig(),
   )
@@ -297,6 +299,24 @@ describe("deterministic full captures through Pi (issue #30)", () => {
     expect(runTwo.stageRecords).toContain("verify:failed")
     expect(runTwo.stageRecords).not.toContain("release:")
     expect(runTwo.stageRecords).not.toContain("watch:")
+  })
+
+  test("Run 1 records the PR receipt; Run 2 records none (issue #32)", () => {
+    const prReceipts = (exported: ExportedRun) =>
+      exported.events.filter(
+        (event) =>
+          event.type === "broker_receipt_recorded" &&
+          event.receipt.receipt_id === "receipt-pr",
+      )
+    const run1Prs = prReceipts(exportOne)
+    expect(run1Prs).toHaveLength(1)
+    const receipt = run1Prs[0]?.receipt
+    expect(receipt?.kind).toBe("action")
+    expect(receipt.outcome).toBe("ok")
+    // The recorded adapter carries no hosted url, so the stand-in command is
+    // preserved and no external link is recorded.
+    expect("url" in receipt).toBe(false)
+    expect(prReceipts(exportTwo)).toHaveLength(0)
   })
 
   test("both exported bundles pass the saved-bundle verifier and replay offline", () => {

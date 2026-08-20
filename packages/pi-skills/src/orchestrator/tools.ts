@@ -74,7 +74,7 @@ export function createOrchestratorTools(
   const request: AgentTool<any> = {
     name: ORCHESTRATOR_REQUEST_TOOL,
     description:
-      "Request one bounded unit of work from the Control Plane after declaring its stage, dependencies, and budgets. The Control Plane may reject it; this tool cannot transition stages or alter durable state directly.",
+      "Request one bounded unit of work from the Control Plane after declaring its stage, dependencies, and budgets. The Control Plane may reject it; this tool cannot transition stages or alter durable state directly. depends_on must list previously admitted work ids (for example detect-work-001), never artifact content hashes. A rejected proposal is never recorded; retry it with a fresh request_id.",
     label: "Request eligible work",
     parameters: requestParameters,
     executionMode: "sequential",

@@ -21,6 +21,7 @@ import { join } from "node:path"
 import type { ModelGateway, LeaseRef } from "@sih/brokers"
 import { validate } from "@sih/contracts/parse"
 import type {
+  EvidenceItem,
   FusionJudgeOutput,
   FusionParticipantOutput,
   FusionSynthesizerOutput,
@@ -59,6 +60,8 @@ export interface FusionRoundOptions {
   revisionId: string
   task: string
   brief?: string
+  /** The pinned Evidence Set items of revision R_n, for citation. */
+  items?: readonly EvidenceItem[]
   config: FusionRoleConfig
   skillsRoot: string
   scratchRoot: string
@@ -434,7 +437,8 @@ export async function runFusionRound(
     options.brief,
     options.revisionId,
     judgeInputs,
-    JSON.stringify(judgeRun.output)
+    JSON.stringify(judgeRun.output),
+    options.items
   )
   const synthesizerRun = await runJudgeOrSynthesizer({
     kind: "synthesizer",

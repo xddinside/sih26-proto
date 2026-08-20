@@ -70,6 +70,7 @@ export function actionReceipt(env: ReceiptEnv, spec: {
   permitId?: string
   outcome: "ok" | "failed" | "error" | "unknown"
   executedAt?: string
+  url?: string
 }): BrokerReceipt {
   return {
     kind: "action",
@@ -93,6 +94,7 @@ export function actionReceipt(env: ReceiptEnv, spec: {
     ...(spec.permitId === undefined ? {} : { permit_id: spec.permitId }),
     outcome: spec.outcome,
     executed_at: spec.executedAt ?? new Date().toISOString(),
+    ...(spec.url === undefined ? {} : { url: spec.url }),
   } as BrokerReceipt
 }
 

@@ -18,7 +18,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@sih/contracts": "workspace:*",
-        "postgres": "3.4.7",
+        "postgres": "3.4.9",
       },
       "devDependencies": {
         "@types/bun": "1.3.14",
@@ -60,6 +60,7 @@
       "dependencies": {
         "@earendil-works/pi-ai": "0.79.4",
         "@sih/contracts": "workspace:*",
+        "openai": "6.26.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.14",
@@ -1306,7 +1307,7 @@
 
     "postcss-selector-parser": ["postcss-selector-parser@7.1.5", "", { "dependencies": { "cssesc": "^3.0.0", "util-deprecate": "^1.0.2" } }, "sha512-KvvtD7SrlBP7dlgkBghEE3r84CABm5SmV2aNcG4oCA+qDnJ/tvKonFVvwWAyyWUEwxuNawdfEAZKP9zM3oZ2Uw=="],
 
-    "postgres": ["postgres@3.4.7", "", {}, "sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw=="],
+    "postgres": ["postgres@3.4.9", "", {}, "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="],
 
     "powershell-utils": ["powershell-utils@0.2.0", "", {}, "sha512-ZlsFlG7MtSFCoc5xreOvBAozCJ6Pf06opgJjh9ONEv418xpZSAzNjstD36C6+JwOnfSqOW/9uDkqKjezTdxZhw=="],
 

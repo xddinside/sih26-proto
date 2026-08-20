@@ -27,6 +27,7 @@ import type {
   streamSimple,
 } from "@earendil-works/pi-ai"
 import type { ModelGateway, GatewayStreamRequest, LeaseRef  } from "@sih/brokers"
+import { resolveSupplementalModel } from "@sih/brokers"
 import type { AGENT_PHASE, AgentRunArtifactWire } from "@sih/contracts/types"
 
 import { DEFAULT_ROLE_LIMITS  } from "./limits.js"
@@ -194,7 +195,9 @@ export class PiRoleSession {
 
   private resolveModel(): Model<any> {
     const lookup = getModel as (provider: string, id: string) => Model<any> | undefined
-    const model = lookup(this.options.model.provider, this.options.model.id)
+    const catalog = lookup(this.options.model.provider, this.options.model.id)
+    const supplemental = resolveSupplementalModel(this.options.model.provider, this.options.model.id)
+    const model = catalog ?? (supplemental === undefined ? undefined : supplemental as unknown as Model<any>)
     if (model === undefined) {
       throw new RoleSessionError(
         `unknown model ${this.options.model.provider}/${this.options.model.id}`,

@@ -99,6 +99,9 @@ const actionReceipt = {
     outcome: { enum: ["ok", "failed", "error", "unknown"] },
     executed_at: TIMESTAMP,
     error: { type: "string" },
+    /** An optional link to the external artifact the action produced, e.g. a
+     * hosted pull request URL (issue #32: real source-host PRs). */
+    url: { type: "string", minLength: 1 },
   },
 } as const;
 

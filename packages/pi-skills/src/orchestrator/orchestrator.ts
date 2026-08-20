@@ -618,6 +618,8 @@ export class PiOrchestratorExtension {
       judgeId: string
       synthesizerId: string
       parentAgentId: string
+      /** The pinned Evidence Set items of revision R_n, for citation. */
+      items: readonly EvidenceItem[]
     }) => Promise<FusionRoundResult>
   }): Promise<StageOutcome> {
     await this.enterStage("diagnose")
@@ -656,6 +658,7 @@ export class PiOrchestratorExtension {
               revisionId,
               task: options.task,
               brief,
+              items,
               config: options.fusionConfig,
               skillsRoot: runtime.skillsRoot,
               scratchRoot: this.scratchRoot(),
@@ -675,6 +678,7 @@ export class PiOrchestratorExtension {
               judgeId: options.fusionConfig.judgeId,
               synthesizerId: options.fusionConfig.synthesizerId,
               parentAgentId: `orchestrator-${runtime.checkpoint.runId}`,
+              items,
             })
       this.fusionRounds.push(result)
       options.onRound?.(result)
