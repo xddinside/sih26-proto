@@ -47,6 +47,28 @@ describe("fixed schema rules", () => {
     }
   });
 
+  test("an action broker receipt may carry an optional url (issue #32 real PR)", () => {
+    const base = {
+      kind: "action",
+      receipt_id: "receipt-pr",
+      idempotency_key: "action:inc-1:run-1:repair:receipt-pr",
+      lease_id: "lease-1",
+      stage: "repair",
+      candidate_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      action: { adapter: "source-host-adapter", action_class: "submit_remediation_pr", command: "open pull request remediate/inc-1 against main" },
+      target: { tenant_id: "t", deployment_environment_name: "d", service_name: "s", expected_version: "v" },
+      outcome: "ok",
+      executed_at: "2026-08-19T00:00:00.000Z",
+    };
+    expect(validate("broker-receipt", "1.0", base).ok).toBe(true);
+    expect(
+      validate("broker-receipt", "1.0", {
+        ...base,
+        url: "https://github.com/xddinside/sih26-payment-demo/pull/1",
+      }).ok,
+    ).toBe(true);
+  });
+
   test("Remediation Proposal requires a Recovery Point and exactly one change form", () => {
     const proposal = artifacts().find(
       (artifact) => artifact.artifact_schema_id === "remediation-proposal",

@@ -70,7 +70,6 @@ export function actionReceipt(env: ReceiptEnv, spec: {
   permitId?: string
   outcome: "ok" | "failed" | "error" | "unknown"
   executedAt?: string
-  /** Recorded source-host URL; present only when a real PR was created. */
   url?: string
 }): BrokerReceipt {
   return {

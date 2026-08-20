@@ -11,6 +11,7 @@
  */
 import type { ModelGateway, LeaseRef, ReadBroker } from "@sih/brokers"
 import type {
+  EvidenceItem,
   FusionJudgeOutput,
   FusionParticipantOutput,
   FusionSynthesizerOutput,
@@ -24,6 +25,7 @@ import {
   JUDGE_SYSTEM_PROMPT,
   PARTICIPANT_SYSTEM_PROMPT,
   SYNTHESIZER_SYSTEM_PROMPT,
+  TERMINAL_TOOL_NAMES,
 } from "../prompts.js"
 import { PiRoleSession } from "../role/role-session.js"
 import type { RoleSessionPhase } from "../role/role-session.js"
@@ -50,6 +52,8 @@ export interface RealFusionRoundOptions {
   revisionId: string
   task: string
   brief?: string
+  /** The pinned Evidence Set items of revision R_n, for citation. */
+  items?: readonly EvidenceItem[]
   /** Participant ids in perspective order. */
   participantIds: string[]
   /** One perspective per participant, aligned by index. */
@@ -142,6 +146,7 @@ export async function runRealFusionRound(
     options.task,
     options.brief,
     options.revisionId,
+    options.items,
   )
   const calls: FusionRunArtifact["calls"] = []
   const sessions: FusionRoleSessionRecord[] = []
@@ -165,7 +170,7 @@ export async function runRealFusionRound(
           "Treat it as a starting lens, not a constraint: you may reject it or propose any Hypothesis the evidence supports.",
         ].join("\n"),
         promptText: participantPrompt,
-        terminalName: "submit_hypotheses",
+        terminalName: TERMINAL_TOOL_NAMES.participant,
         schemaName: "fusion-participant-output",
         schemaVersion: "1.0",
         call,
@@ -235,7 +240,7 @@ export async function runRealFusionRound(
     "judge",
     options.judgeId,
     options,
-    createJudgePrompt(options.task, options.brief, options.revisionId, judgeInputs),
+    createJudgePrompt(options.task, options.brief, options.revisionId, judgeInputs, options.items),
   )
   const judgeCaptured = await runRoleSession({
     options,
@@ -243,7 +248,7 @@ export async function runRealFusionRound(
     roleLabel: "judge",
     systemPrompt: JUDGE_SYSTEM_PROMPT,
     promptText: judgeCall.inputPrompt,
-    terminalName: "submit_judgment",
+    terminalName: TERMINAL_TOOL_NAMES.judge,
     schemaName: "fusion-judge-output",
     schemaVersion: "1.0",
     call: judgeCall,
@@ -300,6 +305,7 @@ export async function runRealFusionRound(
       options.revisionId,
       judgeInputs,
       JSON.stringify(judge.output),
+      options.items,
     ),
   )
   const synthesizerCaptured = await runRoleSession({
@@ -308,7 +314,7 @@ export async function runRealFusionRound(
     roleLabel: "synthesizer",
     systemPrompt: SYNTHESIZER_SYSTEM_PROMPT,
     promptText: synthesizerCall.inputPrompt,
-    terminalName: "submit_synthesis",
+    terminalName: TERMINAL_TOOL_NAMES.synthesizer,
     schemaName: "fusion-synthesizer-output",
     schemaVersion: "1.0",
     call: synthesizerCall,

@@ -28,6 +28,7 @@ import {
   REPAIR_IMPLEMENTER_SYSTEM_PROMPT,
   REPAIR_PLANNER_SYSTEM_PROMPT,
   REVIEW_SYSTEM_PROMPT,
+  TERMINAL_TOOL_NAMES,
   TEST_SYSTEM_PROMPT,
 } from "../prompts.js"
 import { PiRoleSession } from "../role/role-session.js"
@@ -244,9 +245,9 @@ export function runPlannerRole(
       `## Changed-surface policy\n${options.changeSurfacePolicy}`,
       `## Declared changed surfaces\n${options.changedSurfaces.join("\n")}`,
       "",
-      "Return your final draft as the Remediation Draft v1 JSON object.",
+      `Return your final draft by calling ${TERMINAL_TOOL_NAMES.planner} with the Remediation Draft v1 object.`,
     ].join("\n"),
-    terminalName: "submit_remediation",
+    terminalName: TERMINAL_TOOL_NAMES.planner,
     schemaName: "remediation-draft",
     schemaVersion: "1.0",
     skill: "sih-repair-planner",
@@ -324,20 +325,32 @@ export function createWorktreeWriteTool(host: WorktreeHost): AgentTool<any> {
 }
 
 /** The diff inspection tool: the deterministic unified diff of the worktree
- * changes against the base ref. */
+ * changes against the base ref, plus its deterministic content hash. */
 export function createWorktreeDiffTool(host: WorktreeHost): AgentTool<any> {
   return {
     name: "worktree_diff",
     description:
-      "Return the complete deterministic unified diff of the worktree changes against the base ref.",
+      "Return the complete deterministic unified diff of the worktree changes against the base ref, and the diff_hash for that exact diff text. Copy both into your submission verbatim.",
     label: "Worktree diff",
     parameters: Type.Object({}),
     executionMode: "sequential",
     async execute(_toolCallId, _params) {
       const diffText = host.diffText()
+      const digest = contentHash({
+        base_ref: host.baseRef,
+        diff: diffText,
+      })
+      if (!digest.ok) {
+        throw new Error(`diff hash failed: ${digest.error.message}`)
+      }
       return {
-        content: [{ type: "text", text: diffText }],
-        details: { changed: diffText.length > 0 },
+        content: [
+          {
+            type: "text",
+            text: `diff_hash: ${digest.value}\n\n${diffText}`,
+          },
+        ],
+        details: { changed: diffText.length > 0, diff_hash: digest.value },
       }
     },
   }
@@ -394,10 +407,10 @@ export async function runImplementerRole(
         ? []
         : ["", "## Admitted Diagnosis", options.admittedDiagnosis]),
       "",
-      "Inspect the worktree, apply the remediation there, then return the " +
-        "complete diff as the Implemented Diff v1 JSON object.",
+      "Inspect the worktree, apply the remediation there, then call " +
+        `${TERMINAL_TOOL_NAMES.implementer} with the Implemented Diff v1 object.`,
     ].join("\n"),
-    terminalName: "submit_implemented_diff",
+    terminalName: TERMINAL_TOOL_NAMES.implementer,
     schemaName: "implemented-diff",
     schemaVersion: "1.0",
     skill: "sih-repair-implementer",
@@ -462,7 +475,7 @@ export function runReviewRole(
       checkHints: options.checkHints,
       inputRefs: options.inputRefs,
     }),
-    terminalName: "submit_review",
+    terminalName: TERMINAL_TOOL_NAMES.reviewer,
     schemaName: "review-report",
     schemaVersion: "1.0",
     skill: REVIEW_SKILL_BY_ROLE[options.role],
@@ -534,7 +547,7 @@ export function runTestRole(
       runsSummary,
       target: options.target,
     }),
-    terminalName: "submit_test_report",
+    terminalName: TERMINAL_TOOL_NAMES.tester,
     schemaName: "test-report",
     schemaVersion: "1.0",
     skill: TEST_SKILL_BY_LAYER[options.layer] ?? "sih-test-unit",
@@ -601,7 +614,9 @@ export async function runOrchestratorRole(
           ? [
               "",
               "## Scheduling protocol",
-              "Call inspect_orchestrator_state first. Then request exactly one bounded work unit for the current eligible stage, using only dependencies and budgets that the projection permits. The Control Plane owns every rejection; do not retry around a rejection or perform stage work yourself.",
+              "Call inspect_orchestrator_state first. Then request exactly one bounded work unit for the current eligible stage shown in the projection, using only dependencies and budgets that the projection permits.",
+              "The current stage's work is eligible unless the projection already shows an admitted work id for that stage or the stage is completed. Do not conclude the run is finished yourself; the Control Plane and the driver decide.",
+              "The Control Plane owns every rejection; do not retry around a rejection or perform stage work yourself.",
             ]
           : []),
         "",
@@ -611,9 +626,9 @@ export async function runOrchestratorRole(
         `- repair: ${options.stageOutcomes.repair}`,
         `- verify: ${options.stageOutcomes.verify}`,
         "",
-        "Return your final report as the Orchestrator Report v1 JSON object.",
+        `Call ${TERMINAL_TOOL_NAMES.orchestrator} with the Orchestrator Report v1 object.`,
       ].join("\n"),
-      terminalName: "submit_orchestrator_report",
+      terminalName: TERMINAL_TOOL_NAMES.orchestrator,
       schemaName: "orchestrator-report",
       schemaVersion: "1.0",
       skill: "sih-orchestrator",

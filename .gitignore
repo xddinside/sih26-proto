@@ -16,3 +16,6 @@ todos.json
 
 # typescript
 *.tsbuildinfo
+
+# append-only real-agent capture store (populated by captures; never committed)
+demo/capture/dev-runs/

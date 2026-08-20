@@ -30,6 +30,7 @@ import {
 import type {Api, AssistantMessage, AssistantMessageEventStream, Context, Model, ThinkingLevel, ToolCall} from "@earendil-works/pi-ai";
 
 import type { ControlPlaneClient, LeaseRef, ModelRequest } from "./types.js"
+import { museStreamingProvider, resolveSupplementalModel } from "./opencode-go.js"
 
 export class ModelGatewayError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -92,6 +93,13 @@ export const piAiStreamingProvider: GatewayStreamingProvider = (
       "MISSING_API_KEY",
       `no provider key available for ${model.provider}`,
     )
+  }
+  // opencode-go muse models stream through a tolerant transport because their
+  // endpoint never sends a finish_reason; the pinned pi-ai transport rejects
+  // such streams (issue #32).
+  const supplemental = resolveSupplementalModel(request.model.provider, request.model.id)
+  if (supplemental !== undefined) {
+    return museStreamingProvider(request, supplemental, apiKey)
   }
   return streamSimple(
     model,
@@ -337,7 +345,7 @@ export class ModelGateway {
     const resolved = getModel(
       request.model.provider as never,
       request.model.id as never,
-    )
+    ) ?? resolveSupplementalModel(request.model.provider, request.model.id)
     if (resolved === undefined) {
       throw new ModelGatewayError(
         "UNKNOWN_MODEL",
@@ -407,6 +415,35 @@ export class ModelGateway {
       return new ModelGatewayError(error.code, scrubbed)
     }
     return new ModelGatewayError("STREAM_FAILED", `${provider}: ${scrubbed}`)
+  }
+
+  /** The catalog metadata the provider resolved for a provider/model slug,
+   * or null when the pair does not resolve. This is the "resolved provider
+   * metadata" the capture manifest freezes; it is sanitized catalog data and
+   * never carries credentials or request secrets. */
+  resolveModelMetadata(
+    provider: string,
+    modelId: string,
+  ): {
+    provider: string
+    id: string
+    name: string
+    base_url: string
+    reasoning: boolean
+    input: string[]
+  } | null {
+    const resolved = getModel(provider as never, modelId as never) ?? resolveSupplementalModel(provider, modelId)
+    if (resolved === undefined) {
+      return null
+    }
+    return {
+      provider: resolved.provider,
+      id: resolved.id,
+      name: resolved.name,
+      base_url: resolved.baseUrl,
+      reasoning: resolved.reasoning,
+      input: resolved.input,
+    }
   }
 
   private scrub(text: string): string {

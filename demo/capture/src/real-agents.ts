@@ -9,6 +9,9 @@
  * surface before the session returns, exactly as the deterministic path
  * seals its artifacts.
  */
+import {
+  NO_CANDIDATE_HASH,
+} from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
 import type {
   ControlPlaneProposals,
 } from "../../../packages/pi-skills/src/orchestrator/orchestrator.js"
@@ -25,6 +28,7 @@ import { runRealVerifyRound } from "../../../packages/pi-skills/src/verify/verif
 import type { VerifyRoundResult } from "../../../packages/pi-skills/src/verify/verify-real.js"
 import type { AssignedTestReceipt } from "../../../packages/pi-skills/src/tests/test-runner.js"
 import type {
+  EvidenceItem,
   OrchestratorReport,
   CaptureManifest,
   CaptureManifestRoleRecord,
@@ -93,12 +97,16 @@ export interface RealAgentKitOptions {
     non_terminal_tool_calls: number
     session_wall_clock_ms: number
     run_wall_clock_ms: number
+    /** The lifecycle attempt budget the policy draft froze for this run. */
+    attempt_limit: number
   }
   schemaVersions: Record<string, string>
   scenario: string
   mode: "rehearsal" | "full-capture"
   providerClass?: "real" | "fixture"
   manifestProvider?: string
+  /** Resolved provider catalog metadata when the Gateway resolved it. */
+  providerMetadata?: CaptureManifest["provider_metadata"]
   orchestrator?: OrchestratorToolService
 }
 
@@ -155,7 +163,7 @@ export class RealAgentKit {
     return {
       gateway: this.options.gateway,
       lease,
-      candidateHash: "no-candidate-hash",
+      candidateHash: NO_CANDIDATE_HASH,
       seal: this.sealSurface(),
       model: this.options.model,
       providerClass: this.options.providerClass,
@@ -181,6 +189,7 @@ export class RealAgentKit {
     judgeId: string
     synthesizerId: string
     parentAgentId: string
+    items: readonly EvidenceItem[]
   }): Promise<FusionRoundResult> {
     const { lease } = this.requireSurface()
     const perspectives = options.participantIds.map((participantId, index) => {
@@ -194,6 +203,7 @@ export class RealAgentKit {
       revisionId: options.revisionId,
       task: options.task,
       brief: options.brief,
+      items: options.items,
       participantIds: options.participantIds,
       participantPerspectives: perspectives,
       judgeId: options.judgeId,
@@ -202,7 +212,7 @@ export class RealAgentKit {
       gateway: this.options.gateway,
       lease,
       readBroker: this.options.readBroker,
-      candidateHash: "no-candidate-hash",
+      candidateHash: NO_CANDIDATE_HASH,
       seal: this.sealSurface(),
       model: this.options.model,
       providerClass: this.options.providerClass,
@@ -357,7 +367,7 @@ export class RealAgentKit {
     scenario: string
   }): Promise<CaptureManifest> {
     const payload: CaptureManifest = {
-      schema_version: "1.1",
+      schema_version: "1.2",
       manifest_id: `capture-manifest:${options.incidentId}:${options.runId}`,
       incident_id: options.incidentId,
       run_id: options.runId,
@@ -383,6 +393,9 @@ export class RealAgentKit {
       budgets: this.options.budgets,
       schema_versions: this.options.schemaVersions,
       role_records: this.roleRecords(),
+      ...(this.options.providerMetadata === undefined
+        ? {}
+        : { provider_metadata: this.options.providerMetadata }),
       manifest_digest: "" as HashString,
       sealed_at: new Date().toISOString(),
     }
@@ -393,7 +406,7 @@ export class RealAgentKit {
     payload.manifest_digest = digest.value
     await this.sealSurface().seal({
       schemaId: "capture-manifest",
-      schemaVersion: "1.1",
+      schemaVersion: "1.2",
       payload,
       producer: { skill: "sih-orchestrator", skill_version: "1.0" },
     })

@@ -62,12 +62,7 @@ export function createRecordedSourceHostAdapter(): SourceHostAdapter {
     kind: "recorded",
     async createPullRequest({ incidentId, runId }) {
       const branch = `remediate/incident-${branchSafe(incidentId)}`
-      return {
-        prUrl: null,
-        number: null,
-        branch,
-        headSha: `recorded-sha-${branchSafe(runId)}`,
-      }
+      return { prUrl: null, number: null, branch, headSha: `recorded-sha-${branchSafe(runId)}` }
     },
     async mergePullRequest() {},
   }
@@ -105,8 +100,7 @@ async function applyDiff(dir: string, diffText: string): Promise<void> {
     for (let i = 0; i < body.length && body[i].startsWith("-"); i += 1) {
       if (body[i] !== "---") lastRemoved = i
     }
-    if (lastRemoved !== -1 && body[lastRemoved] === "-")
-      body.splice(lastRemoved, 1)
+    if (lastRemoved !== -1 && body[lastRemoved] === "-") body.splice(lastRemoved, 1)
     if (body[body.length - 1] === "+") body.pop()
     lines.splice(hunkStart + 1, lines.length - hunkStart - 1, ...body)
   }
@@ -121,30 +115,19 @@ async function applyDiff(dir: string, diffText: string): Promise<void> {
   const patchPath = join(dir, ".sih-implementer.patch")
   writeFileSync(patchPath, lines.join("\n") + "\n", "utf8")
   try {
-    await exec(
-      "git",
-      ["apply", "--recount", "--whitespace=nowarn", patchPath],
-      { cwd: dir }
-    )
+    await exec("git", ["apply", "--recount", "--whitespace=nowarn", patchPath], { cwd: dir })
   } finally {
     await exec("rm", ["-f", patchPath], {}).catch(() => undefined)
   }
 }
 
 /** Create a real GitHub pull request from the implementer's diff. */
-export function createRealSourceHostAdapter(
-  options: { repo?: string; dir?: string } = {}
-): SourceHostAdapter {
+export function createRealSourceHostAdapter(options: { repo?: string; dir?: string } = {}): SourceHostAdapter {
   const repo = options.repo ?? sourceHostRepo()
   const dir = options.dir ?? sourceHostDir()
   return {
     kind: "real",
-    async createPullRequest({
-      incidentId,
-      runId,
-      diffText,
-      changeDescription,
-    }) {
+    async createPullRequest({ incidentId, runId, diffText, changeDescription }) {
       await ensureClone(repo, dir)
       const branch = `remediate/${branchSafe(incidentId)}-${branchSafe(runId)}`
       const existing = await git(["branch", "--list", branch], dir)
@@ -157,64 +140,34 @@ export function createRealSourceHostAdapter(
       await applyDiff(dir, diffText)
       const status = await git(["status", "--porcelain"], dir)
       if (status.length === 0) {
-        throw new Error(
-          `source-host: implementer diff produced no change against ${repo} main`
-        )
+        throw new Error(`source-host: implementer diff produced no change against ${repo} main`)
       }
       await git(["add", "-A"], dir)
       const commitMessage = `remediate: ${changeDescription.split("\n")[0] ?? "payment charge failure"}\n\nIncident ${incidentId} run ${runId}.`
-      await exec(
-        "git",
-        ["-C", dir, "config", "user.email", "sih-agent@sih.dev"],
-        {}
-      )
-      await exec(
-        "git",
-        ["-C", dir, "config", "user.name", "sih-demo-agent"],
-        {}
-      )
+      await exec("git", ["-C", dir, "config", "user.email", "sih-agent@sih.dev"], {})
+      await exec("git", ["-C", dir, "config", "user.name", "sih-demo-agent"], {})
       await git(["commit", "-m", commitMessage], dir)
       await git(["push", "-u", "origin", branch], dir)
       const headSha = await git(["rev-parse", "HEAD"], dir)
       const { stdout: prOut } = await exec(
         "gh",
         [
-          "pr",
-          "create",
-          "-R",
-          repo,
-          "--base",
-          "main",
-          "--head",
-          branch,
-          "--title",
-          `Remediate ${incidentId} (${runId})`,
-          "--body",
-          `Automated remediation PR from the SIH 2026 incident demo.\n\n${changeDescription}`,
+          "pr", "create", "-R", repo, "--base", "main", "--head", branch,
+          "--title", `Remediate ${incidentId} (${runId})`,
+          "--body", `Automated remediation PR from the SIH 2026 incident demo.\n\n${changeDescription}`,
         ],
-        {}
+        {},
       )
       const prUrl = prOut.trim().split("\n").pop() ?? ""
       const numberMatch = prUrl.match(/\/(\d+)\/?$/)
-      return {
-        prUrl: prUrl.length > 0 ? prUrl : null,
-        number: numberMatch === null ? null : Number(numberMatch[1]),
-        branch,
-        headSha,
-      }
+      return { prUrl: prUrl.length > 0 ? prUrl : null, number: numberMatch === null ? null : Number(numberMatch[1]), branch, headSha }
     },
     async mergePullRequest(pr) {
       if (pr.prUrl === null) {
         return
       }
-      await exec(
-        "gh",
-        ["pr", "merge", pr.prUrl, "-R", repo, "--squash", "--delete-branch"],
-        {}
-      ).catch((error) => {
-        console.log(
-          `[source-host] PR merge skipped: ${(error as Error).message}`
-        )
+      await exec("gh", ["pr", "merge", pr.prUrl, "-R", repo, "--squash", "--delete-branch"], {}).catch((error) => {
+        console.log(`[source-host] PR merge skipped: ${(error as Error).message}`)
       })
     },
   }

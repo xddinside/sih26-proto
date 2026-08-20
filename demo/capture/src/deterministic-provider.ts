@@ -24,6 +24,9 @@ interface DeterministicProviderOptions {
   evidenceIds: EvidenceIds
   seed: "S1" | "S2"
   requestBudget: OrchestratorWorkBudget
+  /** `rehearsal` replays a frozen Evidence Set; `full-capture` derives every
+   * role context from the live seeded Signals and Incident Trigger. */
+  mode: "rehearsal" | "full-capture"
 }
 
 function now(): string {
@@ -77,6 +80,19 @@ function admittedWorkIds(text: string): string[] {
 
 function incidentAndRun(options: DeterministicProviderOptions) {
   return { incident_id: options.incidentId, run_id: options.runId, attempt: 1 }
+}
+
+/** The assessments/reflections the deterministic provider's orchestrator
+ * report records. Mode-aware so a full capture never claims to have replayed
+ * a frozen Evidence Set. */
+function orchestrationSummary(options: DeterministicProviderOptions): { assessments: string[]; reflections: string[] } {
+  const source = options.mode === "rehearsal"
+    ? "the frozen Evidence Set"
+    : "the seeded Signals and Incident Trigger"
+  return {
+    assessments: [`deterministic provider drove the Pi role sessions from ${source}`],
+    reflections: ["Control Plane gates owned the lifecycle outcome"],
+  }
 }
 
 function stageOutcomes(text: string, seed: "S1" | "S2") {
@@ -251,8 +267,7 @@ export function deterministicStreamingProvider(
             schema_version: "1.0",
             ...incidentAndRun(options),
             stage_outcomes: stageOutcomes(text, options.seed),
-            assessments: ["deterministic provider replayed the frozen Evidence Set"],
-            reflections: ["Control Plane gates owned the lifecycle outcome"],
+            ...orchestrationSummary(options),
             completed_at: now(),
           })
         }
@@ -261,8 +276,8 @@ export function deterministicStreamingProvider(
           id: "request-work",
           name: "request_orchestrator_work",
           args: {
-            request_id: `rehearsal-${options.runId}-${request.agentId}-work`,
-            work_id: `rehearsal-${options.runId}-${request.agentId}-work`,
+            request_id: `deterministic-${options.runId}-${request.agentId}-work`,
+            work_id: `deterministic-${options.runId}-${request.agentId}-work`,
             stage: currentStage(text),
             attempt: 1,
             depends_on: currentStage(text) === "detect" ? [] : admittedWorkIds(text).slice(-1),
@@ -273,8 +288,7 @@ export function deterministicStreamingProvider(
           schema_version: "1.0",
           ...incidentAndRun(options),
           stage_outcomes: stageOutcomes(text, options.seed),
-          assessments: ["deterministic provider replayed the frozen Evidence Set"],
-          reflections: ["Control Plane gates owned the lifecycle outcome"],
+          ...orchestrationSummary(options),
           completed_at: now(),
         })
       }

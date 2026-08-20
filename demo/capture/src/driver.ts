@@ -93,6 +93,7 @@ import {
 } from "./payloads.js"
 import type { CaptureFacts, EvidenceIds } from "./payloads.js"
 import { RealAgentKit } from "./real-agents.js"
+import type { CaptureManifest } from "@sih/contracts/types"
 import type { FrozenRehearsalEvidence } from "./frozen-evidence.js"
 import { deterministicStreamingProvider } from "./deterministic-provider.js"
 import * as shop from "./shop.js"
@@ -146,7 +147,12 @@ export interface DriverOptions {
   signal?: AbortSignal
   /** Best-effort export hook for an interrupted/failed attempt. */
   onFailure?: (input: { incidentId: string; runId: string; cp: ControlPlane }) => Promise<void>
-  /** Run 1 creates and merges a PR; Run 2 intentionally records none. */
+  /** Watch window length in milliseconds (tests shorten the cadence; the
+   * production capture keeps the recorded 30-second windows). */
+  watchWindowMs?: number
+  /** The source host that turns the implementer's diff into a pull request.
+   * Real for real-provider captures; recorded for deterministic/fixture runs.
+   * Run 1 creates the PR; Run 2 records none (issue #32). */
   sourceHost?: SourceHostAdapter
 }
 
@@ -544,6 +550,8 @@ export interface CaptureReport {
   stageRecords: string[]
   /** Which agent path drove the run. */
   agents: "fixture" | "real"
+  /** The capture manifest sealed before the run closed, when one exists. */
+  manifest?: CaptureManifest | null
   /** The capture manifest sealed before the run closed. */
   manifestSealed: boolean
   /** How many agent-run-artifacts the run sealed. */
@@ -805,20 +813,25 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
   const { run, facts, alert, offline, readAdapters, releaseAdapter, evidenceRunner, savedId } = options
   const runtime = await bootstrap(config)
   const cp = runtime.cp
+  // The Incident Run wall clock is finite for every real-agent run: rehearsals
+  // and full captures share the same 120-minute ceiling, and the abort signal
+  // is wired into every role session. Fixture runs keep the legacy unbounded
+  // Demo Profile behavior.
   const boundedRun = options.frozenEvidence !== undefined
+  const finiteRunBudget = boundedRun || options.agents === "real"
   const runWallClockMs = options.budgets?.run_wall_clock_ms ?? options.agent?.budgets?.run_wall_clock_ms ?? 120 * 60 * 1000
   const runAbortController = new AbortController()
   const abortFromCaller = (): void => runAbortController.abort()
   options.signal?.addEventListener("abort", abortFromCaller, { once: true })
   if (options.signal?.aborted === true) runAbortController.abort()
-  const runTimer = boundedRun
+  const runTimer = finiteRunBudget
     ? setTimeout(() => runAbortController.abort(), runWallClockMs)
     : undefined
   runTimer?.unref?.()
   let activeIncidentId: string | undefined
   const assertRunBudget = (): void => {
     if (runAbortController.signal.aborted) {
-      throw new Error(`rehearsal Incident Run wall-clock budget exhausted (${runWallClockMs}ms)`)
+      throw new Error(`Incident Run wall-clock budget exhausted (${runWallClockMs}ms)`)
     }
   }
 
@@ -1022,9 +1035,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       evidenceRevisionId: revisionId,
       skillsRoot: SKILLS_ROOT,
       toolCatalogVersion: ORCHESTRATOR_TOOL_CATALOG_REVISION,
-      budgets: options.frozenEvidence === undefined
-        ? DEMO_BUDGETS
-        : { ...REHEARSAL_BUDGETS, wallTimeMs: options.budgets?.run_wall_clock_ms ?? REHEARSAL_BUDGETS.wallTimeMs },
+      budgets: finiteRunBudget
+        ? { ...REHEARSAL_BUDGETS, wallTimeMs: runWallClockMs }
+        : DEMO_BUDGETS,
       allowedModels: {
         participant: ["stub-participant-1", "stub-participant-2"],
         judge: ["stub-judge"],
@@ -1068,6 +1081,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           evidenceIds: ids,
           seed: facts.seed,
           requestBudget: schedulerWorkBudget,
+          mode: options.mode ?? "full-capture",
         })
       : realAgent?.streaming ?? piAiStreamingProvider
     const gatewayProviderName = deterministic ? "opencode-go" : realAgent?.provider
@@ -1138,20 +1152,24 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           skillTreeDigest: worker.skillsDigest,
           piAgentCoreVersion: installedVersion("pi-agent-core"),
           piAiVersion: installedVersion("pi-ai"),
-          budgets: agentBudgets,
+          budgets: { ...agentBudgets, attempt_limit: policyDraft.attempt_limit },
+          providerMetadata: gateway.resolveModelMetadata(
+            gatewayProviderName ?? realAgent.provider,
+            realAgent.model,
+          ) ?? undefined,
           limits: {
             maxModelTurns: agentBudgets.model_turns,
             maxNonTerminalToolCalls: agentBudgets.non_terminal_tool_calls,
             maxDurationMs: agentBudgets.session_wall_clock_ms,
           },
-          signal: boundedRun || options.signal !== undefined ? runAbortController.signal : undefined,
+          signal: options.agents === "real" ? runAbortController.signal : undefined,
           schemaVersions: {
             "remediation-draft": "1.0",
             "implemented-diff": "1.0",
             "review-report": "1.0",
             "test-report": "1.0",
             "orchestrator-report": "1.0",
-            "capture-manifest": "1.1",
+            "capture-manifest": "1.2",
             "fusion-participant-output": "1.0",
             "fusion-judge-output": "1.0",
             "fusion-synthesizer-output": "1.0",
@@ -1358,7 +1376,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
           : async (hook) => kit.runFusionRound(hook),
     })
     console.log(`[capture] diagnose sealed diagnosis-report ${diagnose.detail}`)
-    const round = diagnoseOrchestrator.fusionRounds[0]
+    const round = diagnoseOrchestrator.fusionRounds.at(-1)
     console.log(
       `[capture] fusion round=${round?.round} valid=${round?.valid} participants=${round?.participantRuns.map((participant) => (participant.wellFormed ? "ok" : "failed")).join(",")}`,
     )
@@ -1557,6 +1575,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await completeStageWork("repair", repairLease, [remediationProposalRef])
 
     const repairEnv: ReceiptEnv = { incidentId, runId, leaseId: repairLease.leaseId, stage: "repair", candidateHash }
+    // Issue #32: Run 1 opens a real (or recorded) pull request from the
+    // implementer's diff and merges it once the run ships; Run 2 records no PR
+    // at all — its remediation is never released and never reaches a source
+    // host.
     let createdPR: SourceHostPR | null = null
     if (run === 1 && options.sourceHost !== undefined) {
       const diffText = kit === null ? implementerDiffText() : kit.implementerDiffText()
@@ -2214,7 +2236,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
         resourceType: "probe-run",
         result: { outcome: probeOutcome.err === 0 ? "ok" : "error", data: probeOutcome, rowCount: probeOutcome.total },
       }), "read-broker")
-      await sleepMs(30_000, runAbortController.signal)
+      await sleepMs(options.watchWindowMs ?? 30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const rehearsal = await evidenceRunner.rehearseWatch()
@@ -2329,7 +2351,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     const stage2Samples: Record<string, unknown>[] = []
     for (let window = 1; window <= STAGE1_WINDOWS; window += 1) {
       const windowStart = new Date()
-      await sleepMs(30_000, runAbortController.signal)
+      await sleepMs(options.watchWindowMs ?? 30_000, runAbortController.signal)
       const windowEnd = new Date()
       const timeRange = { starts_at: windowStart.toISOString(), ends_at: windowEnd.toISOString() }
       const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -2406,7 +2428,7 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
 
     // Confirmation window: G1-G6 pass once more with no recurrence.
     const confirmationStart = new Date()
-    await sleepMs(30_000, runAbortController.signal)
+    await sleepMs(options.watchWindowMs ?? 30_000, runAbortController.signal)
     const confirmationEnd = new Date()
     const timeRange = { starts_at: confirmationStart.toISOString(), ends_at: confirmationEnd.toISOString() }
     const liveRatio = offline ? 0.01 : await shop.liveErrorRatio()
@@ -2451,9 +2473,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     })
     await completeStageWork("watch", watchLease, [confirmationSealed.artifact_ref])
     assertRunBudget()
+    let sealedManifest: CaptureManifest | null = null
     if (kit !== null) {
       kit.bindStage(watchProposals, watchLease)
-      await sealRunEnd(kit, {
+      sealedManifest = await sealRunEnd(kit, {
         incidentId,
         runId,
         mode: options.mode ?? "full-capture",
@@ -2470,6 +2493,9 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await watchProposals.completeRun("verified-remediation")
     console.log(`[capture] run completed: verified-remediation (incident resolved)`)
 
+    // Issue #32: once Run 1 ships, merge the real pull request so the source
+    // host's PR reflects the released remediation. The merge is best-effort
+    // evidence for the demo; it never changes the already-sealed run outcome.
     if (createdPR !== null && options.sourceHost !== undefined) {
       await options.sourceHost.mergePullRequest(createdPR)
     }
@@ -2497,7 +2523,8 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
       artifactSchemas: cp.sealedArtifacts(incidentId).map((artifact) => artifact.artifactRef.schema_id),
       stageRecords: finalState?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
       agents: kit === null ? "fixture" : "real",
-      manifestSealed: kit !== null,
+      manifest: sealedManifest,
+      manifestSealed: kit !== null && sealedManifest !== null,
       agentRunArtifacts: cp.sealedArtifacts(incidentId).filter(
         (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
       ).length,
@@ -2544,9 +2571,10 @@ function runEndContext(
 
 /** Run the end-of-run Orchestrator role session and seal the capture manifest
  * for both full captures and rehearsals. Rehearsal manifests are retained in
- * the append-only development store but are never eligible for presentation. */
+ * the append-only development store but are never eligible for presentation.
+ * Returns the sealed manifest payload, or null when no agent kit is bound. */
 async function sealRunEnd(
-  kit: RealAgentKit,
+  kit: RealAgentKit | null,
   options: {
     incidentId: string
     runId: string
@@ -2554,7 +2582,10 @@ async function sealRunEnd(
     runContext: string
     mode: "rehearsal" | "full-capture"
   },
-): Promise<void> {
+): Promise<CaptureManifest | null> {
+  if (kit === null) {
+    return null
+  }
   await kit.runOrchestrator({
     incidentId: options.incidentId,
     runId: options.runId,
@@ -2563,7 +2594,7 @@ async function sealRunEnd(
     stageOutcomes: options.stageOutcomes,
     runContext: options.runContext,
   })
-  await kit.sealManifest({
+  return kit.sealManifest({
     incidentId: options.incidentId,
     runId: options.runId,
     attempt: 1,
@@ -2604,8 +2635,9 @@ async function failVerifyAndReturn(options: {
       : { artifact_ref: options.artifactRef, candidate_hash: options.candidateHash }),
     ...(options.stageReason === undefined ? {} : { reason: options.stageReason }),
   })
+  let sealedManifest: CaptureManifest | null = null
   if (options.kit !== null) {
-    await sealRunEnd(options.kit, {
+    sealedManifest = await sealRunEnd(options.kit, {
       incidentId: options.incidentId,
       runId: options.runId,
       mode: options.mode,
@@ -2639,7 +2671,8 @@ async function failVerifyAndReturn(options: {
     artifactSchemas: options.cp.sealedArtifacts(options.incidentId).map((artifact) => artifact.artifactRef.schema_id),
     stageRecords: options.cp.journal.state(options.incidentId)?.runs[0]?.stageRecords.map((record) => `${record.stage}:${record.to}`) ?? [],
     agents: options.kit === null ? "fixture" : "real",
-    manifestSealed: options.kit !== null,
+    manifest: sealedManifest,
+    manifestSealed: options.kit !== null && sealedManifest !== null,
     agentRunArtifacts: options.cp.sealedArtifacts(options.incidentId).filter(
       (artifact) => artifact.artifactRef.schema_id === "agent-run-artifact",
     ).length,

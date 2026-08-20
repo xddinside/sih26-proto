@@ -90,7 +90,11 @@ export function RemediationPanel({ panel }: { panel: RemediationPanelView | null
 
           {panel.prReceipt !== null ? (
             <div className="mt-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">PR-shaped record (source-host adapter stand-in)</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                {panel.prReceipt.url !== null
+                  ? "Pull request (real source host)"
+                  : "PR-shaped record (source-host adapter stand-in)"}
+              </p>
               <div className="mt-1 border border-border px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <CitedValue value={panel.prReceipt.receiptId} source={panel.prReceipt.source} label="PR receipt" />
@@ -98,12 +102,25 @@ export function RemediationPanel({ panel }: { panel: RemediationPanelView | null
                   {panel.prReceipt.executedAt !== null ? (
                     <span className="text-xs text-muted-foreground">executed {panel.prReceipt.executedAt}</span>
                   ) : null}
+                  {panel.prReceipt.url !== null ? (
+                    <a
+                      href={panel.prReceipt.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded border border-border bg-background px-2 py-1 text-xs font-semibold underline-offset-2 hover:bg-muted hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      Open PR
+                    </a>
+                  ) : null}
                 </div>
                 <p className="mt-1 font-mono text-xs text-muted-foreground">{panel.prReceipt.command}</p>
+                {panel.prReceipt.url !== null ? (
+                  <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{panel.prReceipt.url}</p>
+                ) : null}
               </div>
             </div>
           ) : (
-            <p className="mt-3 text-sm text-muted-foreground">no PR-shaped record receipt recorded</p>
+            <p className="mt-3 text-sm text-muted-foreground">no pull request recorded for this run</p>
           )}
         </>
       )}

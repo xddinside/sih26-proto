@@ -4,6 +4,9 @@
  * / `high` reasoning. The role makes two permitted Broker-backed reads and
  * finishes with one schema-valid typed terminal submission.
  *
+ * `SIH_SMOKE_MODEL` overrides the model id (e.g. `muse-spark-1.2-contributor`)
+ * and `SIH_SMOKE_REASONING` overrides the reasoning level.
+ *
  * Opt-in: without `OPENCODE_API_KEY` set, the smoke prints a skip notice and
  * exits 0 (CI-safe). The key is read only by the Model Gateway; this script
  * never touches it. Journals, records, and artifacts are scanned for the key
@@ -107,8 +110,8 @@ async function main(): Promise<void> {
       "hypothesis object whose id, incident_id, incident_run_id, attempt, round, " +
       "causal_claim, affected_scope, predicted_observations, evidence, alternatives, " +
       "proposed_tests, and status fields all follow the schema.",
-    model: { provider: "opencode-go", id: "deepseek-v4-flash" },
-    reasoning: "high",
+    model: { provider: "opencode-go", id: process.env.SIH_SMOKE_MODEL ?? "deepseek-v4-flash" },
+    reasoning: (process.env.SIH_SMOKE_REASONING ?? "high") as "minimal" | "low" | "medium" | "high" | "xhigh",
     lease: l,
     gateway,
     candidateHash: CANDIDATE_HASH,

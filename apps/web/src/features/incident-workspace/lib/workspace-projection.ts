@@ -237,7 +237,7 @@ export interface RemediationPanelView {
   blastRadius: { services: string[]; environments: string[]; cohorts: string[] }
   recoveryPointId: string
   recoveryPointSurfaces: string[]
-  prReceipt: { receiptId: string; command: string; outcome: string; executedAt: string | null; source: Source } | null
+  prReceipt: { receiptId: string; command: string; outcome: string; executedAt: string | null; source: Source; url: string | null } | null
   contentHash: string
   source: Source
 }
@@ -809,6 +809,7 @@ function remediationOf(
           outcome: prReceiptEvent.receipt.outcome,
           executedAt: prReceiptEvent.receipt.executed_at ?? null,
           source: receiptSource(prReceiptEvent.receipt.receipt_id),
+          url: "url" in prReceiptEvent.receipt ? prReceiptEvent.receipt.url ?? null : null,
         }
       : null
   return {

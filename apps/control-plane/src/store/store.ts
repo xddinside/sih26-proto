@@ -152,6 +152,7 @@ export async function openStore(config: Config): Promise<Store> {
   const sql = postgres(config.databaseUrl, {
     max: 10,
     idle_timeout: 20,
+    connect_timeout: 15,
     onnotice: () => undefined,
   })
   const initPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "db", "init.sql")
