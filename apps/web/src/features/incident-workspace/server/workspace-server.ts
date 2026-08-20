@@ -13,6 +13,8 @@ import { DEMO_EVALUATION_TIME } from "../../incidents/constants"
 import { mapReplayFailures } from "../../incidents/lib/store-status"
 import type { IntegrityState, IntegrityStateCopy, MappedError } from "../../incidents/lib/store-status"
 import { loadWorkspaceStore } from "../lib/workspace-loader"
+import { changeWorkspaceView } from "../lib/change-workspace-projection"
+import type { ChangeWorkspaceView } from "../lib/change-workspace-projection"
 import { workspaceView } from "../lib/workspace-projection"
 import type { WorkspaceView } from "../lib/workspace-projection"
 
@@ -24,7 +26,9 @@ export interface WorkspaceReadFailure {
   errors: MappedError[]
 }
 
-export type WorkspaceDetailResult = { ok: true; view: WorkspaceView } | WorkspaceReadFailure
+export type WorkspaceDetailResult =
+  | { ok: true; view: WorkspaceView; changeView: ChangeWorkspaceView | null }
+  | WorkspaceReadFailure
 
 function toFailure(errors: readonly { code?: string; kind?: string; message: string; path?: string }[]): WorkspaceReadFailure {
   const mapped = mapReplayFailures(errors)
@@ -64,5 +68,6 @@ export const fetchWorkspaceDetail = createServerFn({ method: "GET" })
         },
       ])
     }
-    return { ok: true, view }
+    const changeView = changeWorkspaceView(store.value, data.incidentId, DEMO_EVALUATION_TIME)
+    return { ok: true, view, changeView }
   })
