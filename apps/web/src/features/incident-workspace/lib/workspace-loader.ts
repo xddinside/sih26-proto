@@ -21,6 +21,18 @@ import { DEMO_EVALUATION_TIME } from "../../incidents/constants"
 
 const MANIFEST_NAME = "manifest.json"
 
+type WorkspaceStoreResult = ReplayResult<ReplayStore, LoaderError[]>
+
+/**
+ * The presentation bundle is immutable while the app is running. Keep its
+ * verified store in-process so concurrent requests share one verification
+ * pass and later requests do no filesystem or hashing work.
+ */
+let workspaceStoreCache: {
+  directory: string
+  result: Promise<WorkspaceStoreResult>
+} | null = null
+
 /**
  * Resolve the richer saved-run bundle directory for a working directory, or
  * null when no candidate contains a manifest. Walks up from the working
@@ -32,7 +44,9 @@ export function resolveWorkspaceBundleDir(cwd: string): URL | null {
     for (const name of ["saved-runs", path.join("fixtures", "runs")]) {
       const candidate = path.join(dir, "demo", name)
       if (existsSync(path.join(candidate, MANIFEST_NAME))) {
-        return pathToFileURL(candidate.endsWith(path.sep) ? candidate : `${candidate}${path.sep}`)
+        return pathToFileURL(
+          candidate.endsWith(path.sep) ? candidate : `${candidate}${path.sep}`
+        )
       }
     }
     const parent = path.dirname(dir)
@@ -59,16 +73,33 @@ function bundleMissing(cwd: string): LoaderError {
  * the live clock.
  */
 export async function loadWorkspaceStore(
-  cwd: string = process.cwd(),
-): Promise<ReplayResult<ReplayStore, LoaderError[]>> {
+  cwd: string = process.cwd()
+): Promise<WorkspaceStoreResult> {
   const dir = resolveWorkspaceBundleDir(cwd)
   if (dir === null) {
     return { ok: false, error: [bundleMissing(cwd)] }
   }
-  try {
-    await readFile(new URL(MANIFEST_NAME, dir))
-  } catch {
-    return { ok: false, error: [bundleMissing(cwd)] }
+
+  if (workspaceStoreCache?.directory === dir.href) {
+    return workspaceStoreCache.result
   }
-  return loadReplayStoreFromDirectory(dir, { evaluationTime: DEMO_EVALUATION_TIME })
+
+  const result = (async (): Promise<WorkspaceStoreResult> => {
+    try {
+      await readFile(new URL(MANIFEST_NAME, dir))
+    } catch {
+      return { ok: false, error: [bundleMissing(cwd)] }
+    }
+    return loadReplayStoreFromDirectory(dir, {
+      evaluationTime: DEMO_EVALUATION_TIME,
+    })
+  })()
+
+  const cacheEntry = { directory: dir.href, result }
+  workspaceStoreCache = cacheEntry
+  const resolved = await result
+  if (!resolved.ok && workspaceStoreCache === cacheEntry) {
+    workspaceStoreCache = null
+  }
+  return resolved
 }

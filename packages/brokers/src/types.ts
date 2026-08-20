@@ -54,6 +54,23 @@ export interface ActionRequest {
   permitToken?: string
 }
 
+export interface SourceHostRecord {
+  provider: string
+  repository: string
+  pullRequestNumber: number
+  pullRequestUrl: string
+  title: string
+  branch: string
+  baseRef: string
+  headRef: string
+  state: "open" | "closed" | "merged"
+  mergedAt?: string | null
+  checksPassed?: number
+  checksTotal?: number
+  approvals?: number
+  diffText: string
+}
+
 export interface ModelRequest {
   parentAgentId: string
   agentId: string
@@ -68,11 +85,40 @@ export interface ModelRequest {
  * Plane's internal HTTP routes; tests inject a fake.
  */
 export interface ControlPlaneClient {
-  verifyLease(lease: LeaseRef): Promise<{ valid: boolean; runState: string | null; error?: string }>
-  consumePermit(permitId: string, token: string, expected: { candidateHash: string; target: string; incidentId: string }): Promise<{ consumed: boolean; error?: string }>
-  recordReceipt(incidentId: string, runId: string | undefined, stage: string | undefined, receipt: BrokerReceipt, actorKind: "read-broker" | "action-broker"): Promise<{ recorded: boolean }>
-  recordModelUse(incidentId: string, runId: string | undefined, input: Record<string, unknown>): Promise<{ recorded: boolean }>
-  decideAction(incidentId: string, action: { adapter: string; action_class: string; command: string; category: string; target: string }, stage: string): Promise<{ decision: string; reason: string; riskClass: string } | { decision: string; reason: string; riskClass: string; error?: never }>
+  verifyLease(
+    lease: LeaseRef
+  ): Promise<{ valid: boolean; runState: string | null; error?: string }>
+  consumePermit(
+    permitId: string,
+    token: string,
+    expected: { candidateHash: string; target: string; incidentId: string }
+  ): Promise<{ consumed: boolean; error?: string }>
+  recordReceipt(
+    incidentId: string,
+    runId: string | undefined,
+    stage: string | undefined,
+    receipt: BrokerReceipt,
+    actorKind: "read-broker" | "action-broker"
+  ): Promise<{ recorded: boolean }>
+  recordModelUse(
+    incidentId: string,
+    runId: string | undefined,
+    input: Record<string, unknown>
+  ): Promise<{ recorded: boolean }>
+  decideAction(
+    incidentId: string,
+    action: {
+      adapter: string
+      action_class: string
+      command: string
+      category: string
+      target: string
+    },
+    stage: string
+  ): Promise<
+    | { decision: string; reason: string; riskClass: string }
+    | { decision: string; reason: string; riskClass: string; error?: never }
+  >
 }
 
 export interface BrokerOutcome {

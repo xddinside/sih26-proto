@@ -11,8 +11,14 @@ import { createServerFn } from "@tanstack/react-start"
 
 import { DEMO_EVALUATION_TIME } from "../../incidents/constants"
 import { mapReplayFailures } from "../../incidents/lib/store-status"
-import type { IntegrityState, IntegrityStateCopy, MappedError } from "../../incidents/lib/store-status"
+import type {
+  IntegrityState,
+  IntegrityStateCopy,
+  MappedError,
+} from "../../incidents/lib/store-status"
 import { loadWorkspaceStore } from "../lib/workspace-loader"
+import { changeWorkspaceView } from "../lib/change-workspace-projection"
+import type { ChangeWorkspaceView } from "../lib/change-workspace-projection"
 import { workspaceView } from "../lib/workspace-projection"
 import type { WorkspaceView } from "../lib/workspace-projection"
 
@@ -24,11 +30,27 @@ export interface WorkspaceReadFailure {
   errors: MappedError[]
 }
 
-export type WorkspaceDetailResult = { ok: true; view: WorkspaceView } | WorkspaceReadFailure
+export type WorkspaceDetailResult =
+  | { ok: true; view: WorkspaceView; changeView: ChangeWorkspaceView | null }
+  | WorkspaceReadFailure
 
-function toFailure(errors: readonly { code?: string; kind?: string; message: string; path?: string }[]): WorkspaceReadFailure {
+const workspaceDetailCache = new Map<string, Promise<WorkspaceDetailResult>>()
+
+function toFailure(
+  errors: readonly {
+    code?: string
+    kind?: string
+    message: string
+    path?: string
+  }[]
+): WorkspaceReadFailure {
   const mapped = mapReplayFailures(errors)
-  return { ok: false, state: mapped.state, copy: mapped.copy, errors: mapped.errors }
+  return {
+    ok: false,
+    state: mapped.state,
+    copy: mapped.copy,
+    errors: mapped.errors,
+  }
 }
 
 const incidentIdInput = (input: unknown): { incidentId: string } => {
@@ -47,22 +69,47 @@ const incidentIdInput = (input: unknown): { incidentId: string } => {
  * Read the full workspace projection for one saved Incident: every panel
  * 1–12 plus the read-only policy, audit tail, and telemetry deep links.
  */
-export const fetchWorkspaceDetail = createServerFn({ method: "GET" })
-  .validator(incidentIdInput)
-  .handler(async ({ data }): Promise<WorkspaceDetailResult> => {
+async function projectWorkspaceDetail(
+  incidentId: string
+): Promise<WorkspaceDetailResult> {
+  const cached = workspaceDetailCache.get(incidentId)
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const result = (async (): Promise<WorkspaceDetailResult> => {
     const store = await loadWorkspaceStore()
     if (!store.ok) {
       return toFailure(store.error)
     }
-    const view = workspaceView(store.value, data.incidentId, DEMO_EVALUATION_TIME)
+    const view = workspaceView(store.value, incidentId, DEMO_EVALUATION_TIME)
     if (view === null) {
       return toFailure([
         {
           code: "MISSING_ARTIFACT",
-          message: `incident ${JSON.stringify(data.incidentId)} is not part of this saved-run bundle`,
-          path: data.incidentId,
+          message: `incident ${JSON.stringify(incidentId)} is not part of this saved-run bundle`,
+          path: incidentId,
         },
       ])
     }
-    return { ok: true, view }
-  })
+    const changeView = changeWorkspaceView(
+      store.value,
+      incidentId,
+      DEMO_EVALUATION_TIME
+    )
+    return { ok: true, view, changeView }
+  })()
+
+  workspaceDetailCache.set(incidentId, result)
+  const resolved = await result
+  if (!resolved.ok && workspaceDetailCache.get(incidentId) === result) {
+    workspaceDetailCache.delete(incidentId)
+  }
+  return resolved
+}
+
+export const fetchWorkspaceDetail = createServerFn({ method: "GET" })
+  .validator(incidentIdInput)
+  .handler(({ data }): Promise<WorkspaceDetailResult> =>
+    projectWorkspaceDetail(data.incidentId)
+  )

@@ -4,12 +4,20 @@
  * or a general production command. Release-stage actions require a one-use
  * permit consumed at the Control Plane; a replayed permit fails closed.
  */
-import type { ControlPlaneClient, LeaseRef, ActionRequest } from "./types.js"
+import type {
+  ControlPlaneClient,
+  LeaseRef,
+  ActionRequest,
+  SourceHostRecord,
+} from "./types.js"
 import { actionReceipt } from "./receipts.js"
 import type { BrokerReceipt } from "@sih/contracts/types"
 
 export class ActionBrokerError extends Error {
-  constructor(public readonly code: string, message: string) {
+  constructor(
+    public readonly code: string,
+    message: string
+  ) {
     super(message)
   }
 }
@@ -25,7 +33,15 @@ const STAGE_WRITES: Record<string, ReadonlySet<string>> = {
 }
 
 export interface ActionAdapter {
-  execute(action: { adapter: string; action_class: string; command: string }): Promise<{ outcome: "ok" | "failed" | "error"; detail?: string }>
+  execute(action: {
+    adapter: string
+    action_class: string
+    command: string
+  }): Promise<{
+    outcome: "ok" | "failed" | "error"
+    detail?: string
+    sourceHost?: SourceHostRecord
+  }>
 }
 
 const localActionAdapters: Record<string, ActionAdapter> = {
@@ -59,7 +75,10 @@ const localActionAdapters: Record<string, ActionAdapter> = {
 export class ActionBroker {
   constructor(
     private readonly cp: ControlPlaneClient,
-    private readonly adapters: Record<string, ActionAdapter> = localActionAdapters,
+    private readonly adapters: Record<
+      string,
+      ActionAdapter
+    > = localActionAdapters
   ) {}
 
   /**
@@ -68,37 +87,60 @@ export class ActionBroker {
    * actions) consumes a one-use permit. A barred, denied, stale, forged, or
    * mismatched request fails closed.
    */
-  async execute(lease: LeaseRef, request: ActionRequest): Promise<BrokerReceipt> {
+  async execute(
+    lease: LeaseRef,
+    request: ActionRequest
+  ): Promise<BrokerReceipt> {
     const verified = await this.cp.verifyLease(lease)
     if (!verified.valid) {
-      throw new ActionBrokerError("STALE_LEASE", verified.error ?? "lease verification failed")
+      throw new ActionBrokerError(
+        "STALE_LEASE",
+        verified.error ?? "lease verification failed"
+      )
     }
 
     // The stage contract: this stage may not perform this write class.
     const allowed = STAGE_WRITES[lease.stage] ?? new Set()
     if (!allowed.has(request.action.action_class)) {
-      throw new ActionBrokerError("FORGED_STAGE", `stage ${lease.stage} may not perform ${request.action.action_class}`)
+      throw new ActionBrokerError(
+        "FORGED_STAGE",
+        `stage ${lease.stage} may not perform ${request.action.action_class}`
+      )
     }
 
     // The adapter must be declared and its action class approved.
     const adapter = this.adapters[request.action.adapter]
     if (adapter === undefined) {
-      throw new ActionBrokerError("UNKNOWN_ADAPTER", `adapter ${request.action.adapter} is not declared`)
+      throw new ActionBrokerError(
+        "UNKNOWN_ADAPTER",
+        `adapter ${request.action.adapter} is not declared`
+      )
     }
 
     // Release-stage actions require a one-use permit bound to the candidate
     // hash and target, consumed atomically at the Control Plane.
     if (lease.stage === "release") {
       if (request.permitId === undefined || request.permitToken === undefined) {
-        throw new ActionBrokerError("MISSING_PERMIT", "release-stage action requires a one-use permit")
+        throw new ActionBrokerError(
+          "MISSING_PERMIT",
+          "release-stage action requires a one-use permit"
+        )
       }
-      const consumed = await this.cp.consumePermit(request.permitId, request.permitToken, {
-        candidateHash: request.candidateHash,
-        target: request.target.service_name ?? request.target.expected_version,
-        incidentId: lease.incidentId,
-      })
+      const consumed = await this.cp.consumePermit(
+        request.permitId,
+        request.permitToken,
+        {
+          candidateHash: request.candidateHash,
+          target:
+            request.target.service_name ?? request.target.expected_version,
+          incidentId: lease.incidentId,
+        }
+      )
       if (!consumed.consumed) {
-        throw new ActionBrokerError(consumed.error ?? "PERMIT_USED", consumed.error ?? "permit consume failed")
+        throw new ActionBrokerError(
+          consumed.error ?? "PERMIT_USED",
+          consumed.error ?? "permit consume failed"
+        )
       }
     }
 
@@ -113,21 +155,37 @@ export class ActionBroker {
         category: this.categoryOf(request.action.action_class),
         target: request.target.service_name ?? "",
       },
-      lease.stage,
+      lease.stage
     )
     if (decision.decision === "denied") {
       throw new ActionBrokerError("BARRED_ACTION", decision.reason)
     }
     if (decision.riskClass === "barred") {
-      throw new ActionBrokerError("BARRED_ACTION", "barred action class; the product never executes it")
+      throw new ActionBrokerError(
+        "BARRED_ACTION",
+        "barred action class; the product never executes it"
+      )
     }
 
     const adapterResult = await adapter.execute(request.action)
-    const receipt = await actionReceipt(lease, request, request.candidateHash, adapterResult.outcome, {
-      permitId: request.permitId,
-      error: adapterResult.detail,
-    })
-    await this.cp.recordReceipt(lease.incidentId, lease.runId, lease.stage, receipt, "action-broker")
+    const receipt = await actionReceipt(
+      lease,
+      request,
+      request.candidateHash,
+      adapterResult.outcome,
+      {
+        permitId: request.permitId,
+        error: adapterResult.detail,
+        sourceHost: adapterResult.sourceHost,
+      }
+    )
+    await this.cp.recordReceipt(
+      lease.incidentId,
+      lease.runId,
+      lease.stage,
+      receipt,
+      "action-broker"
+    )
     return receipt
   }
 

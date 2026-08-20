@@ -7,7 +7,11 @@ export function getRouter() {
 
     scrollRestoration: true,
     defaultPreload: "intent",
-    defaultPreloadStaleTime: 0,
+    // Saved Demo Runs do not change during a browser session. Keep every
+    // visited or preloaded Incident hot until the page itself is closed.
+    defaultStaleTime: Infinity,
+    defaultPreloadStaleTime: Infinity,
+    defaultGcTime: Infinity,
   })
 
   return router

@@ -20,6 +20,7 @@ export default [
       ".prettierrc",
       "apps/web/src/routeTree.gen.ts",
       "apps/web/e2e/**",
+      "apps/web/public/prototypes/**",
       "**/node_modules/**",
       "**/dist/**",
     ],

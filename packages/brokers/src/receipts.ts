@@ -6,7 +6,13 @@
 import { contentHash } from "@sih/contracts/hashes"
 import type { BrokerReceipt } from "@sih/contracts/types"
 
-import type { LeaseRef, ReadRequest, ReadResult, TargetRef } from "./types.js"
+import type {
+  LeaseRef,
+  ReadRequest,
+  ReadResult,
+  SourceHostRecord,
+  TargetRef,
+} from "./types.js"
 
 function receiptId(): string {
   return `rcpt-${cryptoRandomHex(16)}`
@@ -15,14 +21,16 @@ function receiptId(): string {
 export function cryptoRandomHex(bytes: number): string {
   const buffer = new Uint8Array(bytes)
   crypto.getRandomValues(buffer)
-  return Array.from(buffer, (value) => value.toString(16).padStart(2, "0")).join("")
+  return Array.from(buffer, (value) =>
+    value.toString(16).padStart(2, "0")
+  ).join("")
 }
 
 export async function readReceipt(
   lease: LeaseRef,
   request: ReadRequest,
   result: ReadResult,
-  candidateHash: string,
+  candidateHash: string
 ): Promise<BrokerReceipt> {
   return {
     kind: "read",
@@ -35,8 +43,12 @@ export async function readReceipt(
       backend: request.backend,
       connection_id: request.connection_id,
       query: request.query,
-      ...(request.resource_type === undefined ? {} : { resource_type: request.resource_type }),
-      ...(request.time_bounds === undefined ? {} : { time_bounds: request.time_bounds }),
+      ...(request.resource_type === undefined
+        ? {}
+        : { resource_type: request.resource_type }),
+      ...(request.time_bounds === undefined
+        ? {}
+        : { time_bounds: request.time_bounds }),
     },
     result: {
       outcome: result.outcome,
@@ -49,10 +61,18 @@ export async function readReceipt(
 
 export async function actionReceipt(
   lease: LeaseRef,
-  request: { action: { adapter: string; action_class: string; command: string }; target: TargetRef },
+  request: {
+    action: { adapter: string; action_class: string; command: string }
+    target: TargetRef
+  },
   candidateHash: string,
   outcome: "ok" | "failed" | "error" | "unknown",
-  options: { permitId?: string; error?: string; executedAt?: string } = {},
+  options: {
+    permitId?: string
+    error?: string
+    executedAt?: string
+    sourceHost?: SourceHostRecord
+  } = {}
 ): Promise<BrokerReceipt> {
   return {
     kind: "action",
@@ -64,12 +84,51 @@ export async function actionReceipt(
     action: request.action,
     target: {
       expected_version: request.target.expected_version,
-      ...(request.target.tenant_id === undefined ? {} : { tenant_id: request.target.tenant_id }),
-      ...(request.target.deployment_environment_name === undefined ? {} : { deployment_environment_name: request.target.deployment_environment_name }),
-      ...(request.target.service_name === undefined ? {} : { service_name: request.target.service_name }),
-      ...(request.target.actual_version === undefined ? {} : { actual_version: request.target.actual_version }),
+      ...(request.target.tenant_id === undefined
+        ? {}
+        : { tenant_id: request.target.tenant_id }),
+      ...(request.target.deployment_environment_name === undefined
+        ? {}
+        : {
+            deployment_environment_name:
+              request.target.deployment_environment_name,
+          }),
+      ...(request.target.service_name === undefined
+        ? {}
+        : { service_name: request.target.service_name }),
+      ...(request.target.actual_version === undefined
+        ? {}
+        : { actual_version: request.target.actual_version }),
     },
     ...(options.permitId === undefined ? {} : { permit_id: options.permitId }),
+    ...(options.sourceHost === undefined
+      ? {}
+      : {
+          source_host: {
+            provider: options.sourceHost.provider,
+            repository: options.sourceHost.repository,
+            pull_request_number: options.sourceHost.pullRequestNumber,
+            pull_request_url: options.sourceHost.pullRequestUrl,
+            title: options.sourceHost.title,
+            branch: options.sourceHost.branch,
+            base_ref: options.sourceHost.baseRef,
+            head_ref: options.sourceHost.headRef,
+            state: options.sourceHost.state,
+            ...(options.sourceHost.mergedAt === undefined
+              ? {}
+              : { merged_at: options.sourceHost.mergedAt }),
+            ...(options.sourceHost.checksPassed === undefined
+              ? {}
+              : { checks_passed: options.sourceHost.checksPassed }),
+            ...(options.sourceHost.checksTotal === undefined
+              ? {}
+              : { checks_total: options.sourceHost.checksTotal }),
+            ...(options.sourceHost.approvals === undefined
+              ? {}
+              : { approvals: options.sourceHost.approvals }),
+            diff_text: options.sourceHost.diffText,
+          },
+        }),
     outcome,
     executed_at: options.executedAt ?? new Date().toISOString(),
     ...(options.error === undefined ? {} : { error: options.error }),
@@ -83,7 +142,7 @@ export async function ciReceipt(
   pipelineRunId: string,
   steps: { name: string; status: "success" | "failure" }[],
   status: "success" | "failure",
-  artifactDigest: string,
+  artifactDigest: string
 ): Promise<BrokerReceipt> {
   const logHash = contentHash({ steps })
   return {
@@ -109,13 +168,31 @@ export async function ciReceipt(
 export async function testReceipt(
   lease: LeaseRef,
   candidateHash: string,
-  layer: "T1" | "T2" | "T3" | "T4" | "T5" | "T6" | "T7" | "T8" | "T9" | "T10" | "T11" | "T12" | "T13",
+  layer:
+    | "T1"
+    | "T2"
+    | "T3"
+    | "T4"
+    | "T5"
+    | "T6"
+    | "T7"
+    | "T8"
+    | "T9"
+    | "T10"
+    | "T11"
+    | "T12"
+    | "T13",
   tool: string,
   toolVersion: string,
   target: string,
-  runs: { run_hash: string; result: "pass" | "fail" | "error"; at: string; detail?: string }[],
+  runs: {
+    run_hash: string
+    result: "pass" | "fail" | "error"
+    at: string
+    detail?: string
+  }[],
   outcome: "pass" | "fail" | "flaky-pass" | "error" | "not-run",
-  flaky: boolean,
+  flaky: boolean
 ): Promise<BrokerReceipt> {
   return {
     kind: "test",
