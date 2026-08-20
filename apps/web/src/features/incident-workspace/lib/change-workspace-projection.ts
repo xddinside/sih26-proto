@@ -8,9 +8,8 @@
  * to the saved journal, receipts, or sealed artifacts; nothing is invented.
  *
  * Hard honesty rules implemented here:
- * - The source-host record renders only the recorded `submit_remediation_pr`
- *   receipt: adapter, command, outcome, and execution time. No PR number,
- *   repository, branch, or merge state exists in the bundle, so none appears.
+ * - Source-host PR facts render only when the `submit_remediation_pr` receipt
+ *   records them. The PR diff is the preferred source for file projection.
  * - Run selection is manifest-bound: a capture manifest's incident/run/attempt
  *   pins the run, an ambiguous set of manifests is a named data gap, and a
  *   bundle without a capture manifest falls back to the journal's latest
@@ -140,6 +139,33 @@ export interface ChangeDiffView {
   note: string | null
 }
 
+export interface SourceHostView {
+  provider: string
+  repository: string
+  pullRequestNumber: number
+  pullRequestUrl: string
+  title: string
+  branch: string
+  baseRef: string
+  headRef: string
+  state: "open" | "closed" | "merged"
+  mergedAt: string | null
+  checksPassed: number | null
+  checksTotal: number | null
+  approvals: number | null
+}
+
+/** One review or test artifact shown in the Checks tab. */
+export interface CheckView {
+  id: string
+  recordId: string
+  kind: "Review" | "Test"
+  name: string
+  actor: string
+  tool: string
+  result: "passed" | "failed" | "not-run"
+}
+
 /** The review state summary for the Summary tab. */
 export interface ReviewStateView {
   reviewsPassed: number
@@ -152,6 +178,7 @@ export interface ReviewStateView {
     evaluatedAt: string | null
     candidateHash: string | null
     source: Source | null
+    facts: { fact: string; result: boolean }[]
   } | null
 }
 
@@ -220,7 +247,9 @@ export interface ChangeWorkspaceView {
   run: ChangeRunView
   change: ChangeSummaryView | null
   diff: ChangeDiffView
+  sourceHost: SourceHostView | null
   reviewState: ReviewStateView
+  checks: CheckView[]
   records: Record<string, InspectorRecord>
   defaultRecordId: string
 }
@@ -250,7 +279,13 @@ function artifactSource(envelope: ArtifactEnvelope): Source {
 // ---------------------------------------------------------------------------
 
 export type RunBinding =
-  | { kind: "bound"; runId: string; attempt: number; manifest: CaptureManifest | null; manifestSource: Source | null }
+  | {
+      kind: "bound"
+      runId: string
+      attempt: number
+      manifest: CaptureManifest | null
+      manifestSource: Source | null
+    }
   | { kind: "ambiguous"; reason: string }
   | { kind: "gap"; reason: string }
 
@@ -261,15 +296,23 @@ export type RunBinding =
  * journal's latest progressed run is used, so a queued second attempt never
  * mixes with the run that produced the Remediation.
  */
-export function resolveRunBinding(store: ReplayStore, incidentId: string): RunBinding {
-  const incident = store.incidents.find((candidate) => candidate.incidentId === incidentId)
+export function resolveRunBinding(
+  store: ReplayStore,
+  incidentId: string
+): RunBinding {
+  const incident = store.incidents.find(
+    (candidate) => candidate.incidentId === incidentId
+  )
   if (incident === undefined) {
     return { kind: "gap", reason: "incident is not part of this saved bundle" }
   }
   const manifests: { manifest: CaptureManifest; source: Source }[] = []
   for (const hash of incident.artifactHashes) {
     const artifact = store.artifacts.get(hash)
-    if (artifact !== undefined && artifact.envelope.artifact_schema_id === "capture-manifest") {
+    if (
+      artifact !== undefined &&
+      artifact.envelope.artifact_schema_id === "capture-manifest"
+    ) {
       manifests.push({
         manifest: artifact.envelope.payload as CaptureManifest,
         source: artifactSource(artifact.envelope),
@@ -282,12 +325,21 @@ export function resolveRunBinding(store: ReplayStore, incidentId: string): RunBi
       (entry) =>
         entry.manifest.incident_id === first.manifest.incident_id &&
         entry.manifest.run_id === first.manifest.run_id &&
-        entry.manifest.attempt === first.manifest.attempt,
+        entry.manifest.attempt === first.manifest.attempt
     )
     if (!agree) {
-      return { kind: "ambiguous", reason: "capture manifests disagree on the incident, run, or attempt" }
+      return {
+        kind: "ambiguous",
+        reason: "capture manifests disagree on the incident, run, or attempt",
+      }
     }
-    return { kind: "bound", runId: first.manifest.run_id, attempt: first.manifest.attempt, manifest: first.manifest, manifestSource: first.source }
+    return {
+      kind: "bound",
+      runId: first.manifest.run_id,
+      attempt: first.manifest.attempt,
+      manifest: first.manifest,
+      manifestSource: first.source,
+    }
   }
   let fallback: Extract<JournalEvent, { type: "run_transition" }> | null = null
   for (let i = incident.events.length - 1; i >= 0; i -= 1) {
@@ -318,9 +370,11 @@ function envelopesOf(
   store: ReplayStore,
   incidentId: string,
   schemaId: string,
-  runId: string,
+  runId: string
 ): ArtifactEnvelope[] {
-  const incident = store.incidents.find((candidate) => candidate.incidentId === incidentId)
+  const incident = store.incidents.find(
+    (candidate) => candidate.incidentId === incidentId
+  )
   if (incident === undefined) {
     return []
   }
@@ -353,18 +407,29 @@ function itemRecordId(itemId: string): string {
 // ---------------------------------------------------------------------------
 
 /** The recorded diff projection, parsed or failed closed. */
-function diffOf(proposal: RemediationProposal | undefined, source: Source | null): ChangeDiffView {
-  if (proposal === undefined || proposal.diff === undefined) {
-    return { state: "absent", files: [], additions: 0, deletions: 0, rawText: null, rawSource: null, note: "the recorded Remediation carries no diff" }
+function diffOf(
+  diffText: string | null,
+  source: Source | null
+): ChangeDiffView {
+  if (diffText === null) {
+    return {
+      state: "absent",
+      files: [],
+      additions: 0,
+      deletions: 0,
+      rawText: null,
+      rawSource: null,
+      note: "the recorded Remediation carries no diff",
+    }
   }
-  const parsed = parseUnifiedDiff(proposal.diff.diff_text)
+  const parsed = parseUnifiedDiff(diffText)
   if (!parsed.ok) {
     return {
       state: parsed.reason,
       files: [],
       additions: 0,
       deletions: 0,
-      rawText: proposal.diff.diff_text,
+      rawText: diffText,
       rawSource: source,
       note: parsed.note,
     }
@@ -380,7 +445,7 @@ function diffOf(proposal: RemediationProposal | undefined, source: Source | null
     })),
     additions: parsed.diff.additions,
     deletions: parsed.diff.deletions,
-    rawText: proposal.diff.diff_text,
+    rawText: diffText,
     rawSource: source,
     note: null,
   }
@@ -434,19 +499,90 @@ function sourceHostReceipt(detail: {
 
 /** The narrowed action receipt of a source-host event, or null. */
 function actionReceiptOf(
-  event: Extract<JournalEvent, { type: "broker_receipt_recorded" }> | null,
-): Extract<JournalEvent, { type: "broker_receipt_recorded" }>["receipt"] & { kind: "action" } | null {
-  return event === null || event.receipt.kind !== "action" ? null : event.receipt
+  event: Extract<JournalEvent, { type: "broker_receipt_recorded" }> | null
+):
+  | (Extract<JournalEvent, { type: "broker_receipt_recorded" }>["receipt"] & {
+      kind: "action"
+    })
+  | null {
+  return event === null || event.receipt.kind !== "action"
+    ? null
+    : event.receipt
+}
+
+/** Project issue #32's deliberately small receipt (`url` + command) without
+ * mutating the sealed bundle or inventing GitHub review/check facts. */
+function recordedSourceHostOf(input: {
+  receipt: ReturnType<typeof actionReceiptOf>
+  incidentId: string
+  runId: string
+  proposal: RemediationProposal | undefined
+  merged: boolean
+}): SourceHostView | null {
+  const rich = input.receipt?.source_host
+  if (rich !== undefined) {
+    return {
+      provider: rich.provider,
+      repository: rich.repository,
+      pullRequestNumber: rich.pull_request_number,
+      pullRequestUrl: rich.pull_request_url,
+      title: rich.title,
+      branch: rich.branch,
+      baseRef: rich.base_ref,
+      headRef: rich.head_ref,
+      state: rich.state,
+      mergedAt: rich.merged_at ?? null,
+      checksPassed: rich.checks_passed ?? null,
+      checksTotal: rich.checks_total ?? null,
+      approvals: rich.approvals ?? null,
+    }
+  }
+  const url = input.receipt?.url
+  if (url === undefined) return null
+
+  let repository = "not recorded"
+  let pullRequestNumber = 0
+  try {
+    const parsed = new URL(url)
+    const parts = parsed.pathname.split("/").filter(Boolean)
+    if (parts.length >= 2) repository = `${parts[0]}/${parts[1]}`
+    pullRequestNumber = Number(parts.at(-1)) || 0
+  } catch {
+    // Schema validation owns URL validity; retain a fail-closed projection.
+  }
+  const branch =
+    /open pull request (.+?) against /.exec(
+      input.receipt?.action.command ?? ""
+    )?.[1] ?? "not recorded"
+  return {
+    provider: "github",
+    repository,
+    pullRequestNumber,
+    pullRequestUrl: url,
+    title: `Remediate ${input.incidentId} (${input.runId})`,
+    branch,
+    baseRef: input.proposal?.diff?.base_ref ?? "not recorded",
+    headRef: input.receipt?.candidate_hash ?? "not recorded",
+    state: input.merged ? "merged" : "open",
+    mergedAt: null,
+    checksPassed: null,
+    checksTotal: null,
+    approvals: null,
+  }
 }
 
 /** True when a release action receipt for the run records a success. */
-function releaseSucceeded(detail: { events: readonly JournalEvent[] }, runId: string): boolean {
+function releaseSucceeded(
+  detail: { events: readonly JournalEvent[] },
+  runId: string
+): boolean {
   for (const event of detail.events) {
     if (
       event.type === "broker_receipt_recorded" &&
       event.run_id === runId &&
       event.receipt.kind === "action" &&
-      (event.receipt.receipt_id === "receipt-service-swap" || event.receipt.receipt_id === "receipt-swap") &&
+      (event.receipt.receipt_id === "receipt-service-swap" ||
+        event.receipt.receipt_id === "receipt-swap") &&
       event.receipt.outcome === "ok"
     ) {
       return true
@@ -456,10 +592,25 @@ function releaseSucceeded(detail: { events: readonly JournalEvent[] }, runId: st
 }
 
 /** True when a confirmation-stage Watch report passed for the run. */
-function watchConfirmed(store: ReplayStore, incidentId: string, runId: string): boolean {
-  for (const envelope of envelopesOf(store, incidentId, "watch-report", runId)) {
-    const report = envelope.payload as { rollout_stage: string; stage_outcome: string }
-    if (report.rollout_stage === "confirmation" && report.stage_outcome === "pass") {
+function watchConfirmed(
+  store: ReplayStore,
+  incidentId: string,
+  runId: string
+): boolean {
+  for (const envelope of envelopesOf(
+    store,
+    incidentId,
+    "watch-report",
+    runId
+  )) {
+    const report = envelope.payload as {
+      rollout_stage: string
+      stage_outcome: string
+    }
+    if (
+      report.rollout_stage === "confirmation" &&
+      report.stage_outcome === "pass"
+    ) {
       return true
     }
   }
@@ -467,7 +618,10 @@ function watchConfirmed(store: ReplayStore, incidentId: string, runId: string): 
 }
 
 /** The run-scoped journal window for the run context strip. */
-function runWindow(detail: { events: readonly JournalEvent[] }, runId: string): {
+function runWindow(
+  detail: { events: readonly JournalEvent[] },
+  runId: string
+): {
   startedAt: string | null
   endedAt: string | null
   durationSeconds: number | null
@@ -491,7 +645,10 @@ function runWindow(detail: { events: readonly JournalEvent[] }, runId: string): 
   }
   const durationSeconds =
     startedAt !== null && endedAt !== null
-      ? Math.max(Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 1000), 0)
+      ? Math.max(
+          Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 1000),
+          0
+        )
       : null
   return { startedAt, endedAt, durationSeconds, startedSource, endedSource }
 }
@@ -500,8 +657,30 @@ function runWindow(detail: { events: readonly JournalEvent[] }, runId: string): 
 // Records registry
 // ---------------------------------------------------------------------------
 
-function factsOf(rows: [string, string, Source | null][]): { label: string; value: string; source: Source | null }[] {
+function factsOf(
+  rows: [string, string, Source | null][]
+): { label: string; value: string; source: Source | null }[] {
   return rows.map(([label, value, source]) => ({ label, value, source }))
+}
+
+function readableTime(value: string | null): string {
+  if (value === null) return "Not recorded"
+  const time = new Date(value)
+  if (Number.isNaN(time.getTime())) return "Not recorded"
+  return `${new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(time)} UTC`
+}
+
+function readableDuration(seconds: number | null): string {
+  if (seconds === null) return "Not recorded"
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
 }
 
 /** Build the inspector record registry for one Incident view. */
@@ -512,25 +691,36 @@ function recordsOf(context: {
   run: ChangeRunView
   proposal: RemediationProposal | undefined
   proposalEnvelope: ArtifactEnvelope | undefined
-  receiptEvent: Extract<JournalEvent, { type: "broker_receipt_recorded" }> | null
+  receiptEvent: Extract<
+    JournalEvent,
+    { type: "broker_receipt_recorded" }
+  > | null
+  sourceHost: SourceHostView | null
   diagnosis: DiagnosisReport | undefined
   evidenceItems: EvidenceSet["items"]
   verification: VerificationReport | undefined
   verificationEnvelope: ArtifactEnvelope | undefined
+  reviewEnvelopes: ArtifactEnvelope[]
+  testEnvelopes: ArtifactEnvelope[]
   releaseGate: GateView | null
   hypothesisGate: GateView | null
   recoveryConsumed: boolean
   diff: ChangeDiffView
   manifest: CaptureManifest | null
   manifestSource: Source | null
+  journalEvents: readonly JournalEvent[]
 }): Record<string, InspectorRecord> {
   const { store, incidentId, runId } = context
   const records: Record<string, InspectorRecord> = {}
 
   const acceptedId = context.proposal?.citations[0]?.hypothesis_id ?? null
   const hypothesis =
-    context.diagnosis?.hypotheses.find((candidate) => candidate.id === acceptedId) ??
-    context.diagnosis?.hypotheses.find((candidate) => candidate.status === "accepted") ??
+    context.diagnosis?.hypotheses.find(
+      (candidate) => candidate.id === acceptedId
+    ) ??
+    context.diagnosis?.hypotheses.find(
+      (candidate) => candidate.status === "accepted"
+    ) ??
     context.diagnosis?.hypotheses[0]
   const hypothesisId = hypothesis?.id ?? null
 
@@ -542,9 +732,14 @@ function recordsOf(context: {
   add({
     id: "run",
     kind: "Run record",
-    title: `${runId} · ${context.run.state}${context.run.outcome !== null ? ` · ${context.run.outcome}` : ""}`,
+    title: `Attempt ${context.run.attempt} · ${context.run.state}`,
     status: context.run.state,
-    statusTone: context.run.state === "completed" ? "positive" : context.run.state === "failed" ? "negative" : "neutral",
+    statusTone:
+      context.run.state === "completed"
+        ? "positive"
+        : context.run.state === "failed"
+          ? "negative"
+          : "neutral",
     summary:
       context.run.failureReason !== null
         ? `The run failed: ${context.run.failureReason}.`
@@ -552,14 +747,19 @@ function recordsOf(context: {
           ? `The run completed with outcome ${context.run.outcome}.`
           : "The run is recorded in the journal.",
     facts: factsOf([
-      ["Run", runId, null],
       ["Attempt", String(context.run.attempt), null],
       ["State", context.run.state, null],
-      ["Started", context.run.startedAt ?? "unrecorded", context.run.startedSource],
-      ["Ended", context.run.endedAt ?? "unrecorded", context.run.endedSource],
-      ["Duration", context.run.durationSeconds === null ? "unrecorded" : `${context.run.durationSeconds}s`, context.run.durationSource],
-      ["Policy", context.run.policyVersion ?? "unrecorded", context.run.policySource],
-      ["Candidate", context.proposal?.candidate_hash ?? "unrecorded", context.proposalEnvelope === undefined ? null : artifactSource(context.proposalEnvelope)],
+      [
+        "Started",
+        readableTime(context.run.startedAt),
+        context.run.startedSource,
+      ],
+      ["Ended", readableTime(context.run.endedAt), context.run.endedSource],
+      [
+        "Duration",
+        readableDuration(context.run.durationSeconds),
+        context.run.durationSource,
+      ],
     ]),
     related: [
       { recordId: "source-host", label: "Source-host receipt" },
@@ -582,22 +782,27 @@ function recordsOf(context: {
     add({
       id: "manifest",
       kind: "Capture manifest",
-      title: `capture-manifest · ${context.manifest.manifest_id}`,
+      title: "Capture details",
       status: context.manifest.mode,
-      statusTone: context.manifest.mode === "full-capture" ? "positive" : "info",
+      statusTone:
+        context.manifest.mode === "full-capture" ? "positive" : "info",
       summary: `Sealed capture manifest for run ${context.manifest.run_id}, attempt ${context.manifest.attempt}.`,
       facts: factsOf([
-        ["Manifest", context.manifest.manifest_id, context.manifestSource],
-        ["Mode", context.manifest.mode, null],
-        ["Provider", `${context.manifest.provider_class} · ${context.manifest.provider}`, null],
+        ["Capture type", context.manifest.mode, null],
+        [
+          "Provider",
+          `${context.manifest.provider_class} · ${context.manifest.provider}`,
+          null,
+        ],
         ["Model", context.manifest.model, null],
         ["Reasoning", context.manifest.reasoning, null],
-        ["Sealed", context.manifest.sealed_at, null],
-        ["Core", context.manifest.pi_agent_core_version, null],
       ]),
       related: [{ recordId: "run", label: "Run record" }],
-      artifactLink: context.manifestSource?.kind === "artifact" ? context.manifestSource.ref : null,
-      reference: context.manifest.manifest_id,
+      artifactLink:
+        context.manifestSource?.kind === "artifact"
+          ? context.manifestSource.ref
+          : null,
+      reference: null,
       raw: context.manifest,
     })
   }
@@ -605,47 +810,66 @@ function recordsOf(context: {
   // Source-host record -----------------------------------------------------
   const receiptEvent = context.receiptEvent
   const sourceHostReceiptView = actionReceiptOf(receiptEvent)
-  const notRecorded = "not recorded in this bundle"
+  const sourceHost = context.sourceHost
   add({
     id: "source-host",
     kind: "Source-host record",
-    title: sourceHostReceiptView === null ? "Source-host record" : `receipt ${sourceHostReceiptView.receipt_id}`,
-    status: sourceHostReceiptView === null ? "Not recorded" : sourceHostReceiptView.outcome === "ok" ? "Recorded" : "Unresolved",
-    statusTone: sourceHostReceiptView === null ? "neutral" : sourceHostReceiptView.outcome === "ok" ? "positive" : "warning",
+    title:
+      sourceHost === null
+        ? sourceHostReceiptView === null
+          ? "Source-host record"
+          : `receipt ${sourceHostReceiptView.receipt_id}`
+        : `#${sourceHost.pullRequestNumber} ${sourceHost.title}`,
+    status:
+      sourceHost === null
+        ? sourceHostReceiptView === null
+          ? "Not recorded"
+          : "Recorded"
+        : sourceHost.state === "merged"
+          ? "Verified"
+          : "Recorded",
+    statusTone:
+      sourceHost?.state === "merged"
+        ? "positive"
+        : sourceHostReceiptView?.outcome === "ok"
+          ? "info"
+          : sourceHostReceiptView === null
+            ? "neutral"
+            : "warning",
     summary:
       sourceHostReceiptView === null
         ? "The saved bundle records no source-host action for this run. There is no PR number, repository, branch, or merge state to show."
-        : "The recorded source-host receipt for the Remediation. The bundle records the command and its outcome; it does not record a PR number, repository, branch, or merge state.",
-    facts: factsOf([
-      ...(sourceHostReceiptView === null
+        : sourceHost === null
+          ? "The recorded source-host receipt does not include PR metadata."
+          : sourceHost.checksTotal === null && sourceHost.approvals === null
+            ? `${sourceHost.state.charAt(0).toUpperCase()}${sourceHost.state.slice(1)}. GitHub checks and approvals were not recorded in the bundle.`
+            : `${sourceHost.state.charAt(0).toUpperCase()}${sourceHost.state.slice(1)}. ${sourceHost.checksPassed ?? "unrecorded"}/${sourceHost.checksTotal ?? "unrecorded"} passed; ${sourceHost.approvals ?? "unrecorded"} approved.`,
+    facts: factsOf(
+      sourceHost !== null
         ? [
-            ["Receipt", notRecorded, null],
-            ["Action class", notRecorded, null],
-            ["Adapter", notRecorded, null],
-            ["Command", notRecorded, null],
+            ["Repository", sourceHost.repository, null],
+            ["Branch", sourceHost.branch, null],
+            [
+              "Status",
+              sourceHost.mergedAt === null
+                ? sourceHost.state
+                : `merged ${readableTime(sourceHost.mergedAt)}`,
+              null,
+            ],
+            ["Link", sourceHost.pullRequestUrl, null],
           ]
-        : [
-            ["Receipt", sourceHostReceiptView.receipt_id, receiptSource(sourceHostReceiptView.receipt_id)],
-            ["Action class", sourceHostReceiptView.action.action_class, null],
-            ["Adapter", sourceHostReceiptView.action.adapter, null],
-            ["Command", sourceHostReceiptView.action.command, null],
-            ["Outcome", sourceHostReceiptView.outcome, null],
-            ["Executed", sourceHostReceiptView.executed_at ?? "unrecorded", null],
-            ["Candidate", sourceHostReceiptView.candidate_hash ?? "unrecorded", null],
-          ]) as [string, string, Source | null][],
-      ["PR number", notRecorded, null],
-      ["Repository", notRecorded, null],
-      ["Branch", notRecorded, null],
-      ["Merge state", notRecorded, null],
-    ]),
-    related: [
-      { recordId: "remediation", label: "Remediation" },
-      { recordId: "run", label: "Run record" },
-      { recordId: "verification", label: "Verification" },
-    ],
+        : sourceHostReceiptView === null
+          ? []
+          : [
+              ["Action", sourceHostReceiptView.action.action_class, null],
+              ["Outcome", sourceHostReceiptView.outcome, null],
+            ]
+    ),
+    related: [],
     artifactLink: null,
-    reference: sourceHostReceiptView?.receipt_id ?? null,
-    raw: sourceHostReceiptView === null ? null : (sourceHostReceiptView),
+    reference:
+      sourceHost?.pullRequestUrl ?? sourceHostReceiptView?.receipt_id ?? null,
+    raw: sourceHostReceiptView === null ? null : sourceHostReceiptView,
   })
 
   // Remediation record -----------------------------------------------------
@@ -655,28 +879,52 @@ function recordsOf(context: {
       id: "remediation",
       kind: "Remediation",
       title: proposal.change_description,
-      status: context.diff.state === "parsed" ? "Diff parsed" : context.diff.state === "unparseable" ? "Diff unparseable" : "No diff",
+      status:
+        context.diff.state === "parsed"
+          ? "Diff parsed"
+          : context.diff.state === "unparseable"
+            ? "Diff unparseable"
+            : "No diff",
       statusTone: context.diff.state === "parsed" ? "positive" : "warning",
       summary: `${proposal.remediation_class} change prepared under ${proposal.action_risk_class} risk on the ${proposal.gate_path} path.`,
       facts: factsOf([
         ["Change", proposal.change_description, null],
-        ["Candidate", proposal.candidate_hash, context.proposalEnvelope === undefined ? null : artifactSource(context.proposalEnvelope)],
         ["Class", proposal.remediation_class, null],
         ["Risk class", proposal.action_risk_class, null],
         ["Gate path", proposal.gate_path, null],
-        ["Disposition", proposal.disposition, null],
-        ["Base ref", proposal.diff?.base_ref ?? "unrecorded", null],
-        ["Diff hash", proposal.diff?.diff_hash ?? "unrecorded", null],
-        ["Changed surfaces", proposal.changed_surfaces.join(", ") || "unrecorded", null],
-        ["Blast radius", [...(proposal.blast_radius?.services ?? []), ...(proposal.blast_radius?.environments ?? [])].join(" · ") || "unrecorded", null],
+        [
+          "Changed surfaces",
+          proposal.changed_surfaces.join(", ") || "unrecorded",
+          null,
+        ],
+        [
+          "Blast radius",
+          [
+            ...(proposal.blast_radius?.services ?? []),
+            ...(proposal.blast_radius?.environments ?? []),
+          ].join(" · ") || "unrecorded",
+          null,
+        ],
         ["Test plan", proposal.test_plan.join(", "), null],
       ]),
       related: [
         { recordId: "source-host", label: "Source-host receipt" },
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
         { recordId: "recovery:point", label: "Recovery Point" },
-        ...context.diff.files.map((file) => ({ recordId: file.id, label: file.path ?? file.id })),
-        ...(context.diff.rawText === null ? [] : [{ recordId: "diff-raw", label: "Raw diff" }]),
+        ...context.diff.files.map((file) => ({
+          recordId: file.id,
+          label: file.path ?? file.id,
+        })),
+        ...(context.diff.rawText === null
+          ? []
+          : [{ recordId: "diff-raw", label: "Raw diff" }]),
       ],
       artifactLink: context.proposalEnvelope?.content_hash ?? null,
       reference: proposal.candidate_hash,
@@ -690,7 +938,10 @@ function recordsOf(context: {
       id: "diff-raw",
       kind: "Recorded diff",
       title: "Raw recorded diff",
-      status: context.diff.state === "parsed" ? "Parsed" : "Could not be split by file",
+      status:
+        context.diff.state === "parsed"
+          ? "Parsed"
+          : "Could not be split by file",
       statusTone: context.diff.state === "parsed" ? "positive" : "warning",
       summary:
         context.diff.state === "parsed"
@@ -698,9 +949,18 @@ function recordsOf(context: {
           : "The full diff text recorded in the Remediation, as sealed. It could not be split by file, so no file paths or line counts are shown.",
       facts: factsOf([
         ["State", context.diff.state, null],
-        ...(context.diff.note === null ? [] : ([["Note", context.diff.note, null]] as [string, string, Source | null][])),
+        ...(context.diff.note === null
+          ? []
+          : ([["Note", context.diff.note, null]] as [
+              string,
+              string,
+              Source | null,
+            ][])),
       ]),
-      related: context.diff.files.map((file) => ({ recordId: file.id, label: file.path ?? file.id })),
+      related: context.diff.files.map((file) => ({
+        recordId: file.id,
+        label: file.path ?? file.id,
+      })),
       artifactLink: context.proposalEnvelope?.content_hash ?? null,
       reference: null,
       raw: { diff_text: context.diff.rawText },
@@ -713,7 +973,7 @@ function recordsOf(context: {
       id: file.id,
       kind: "Changed file",
       title: file.path ?? "unrecorded path",
-      status: `${file.additions} additions · ${file.deletions} deletions`,
+      status: "Changed",
       statusTone: "neutral",
       summary: "One file derived from the recorded unified diff.",
       facts: factsOf([
@@ -749,14 +1009,39 @@ function recordsOf(context: {
           ["Causal trigger", candidate.causal_claim.trigger, null],
           ["Defect", candidate.causal_claim.defect, null],
           ["Failure", candidate.causal_claim.failure, null],
-          ["Supporting evidence", candidate.evidence.supporting.map((item) => item.slice(0, 12)).join(", ") || "none recorded", null],
-          ["Opposing evidence", candidate.evidence.opposing.map((item) => item.slice(0, 12)).join(", ") || "none recorded", null],
-          ["Unexplained items", candidate.evidence.unexplained.map((item) => item.slice(0, 12)).join(", ") || "none recorded", null],
-          ["Alternatives", candidate.alternatives.join(", ") || "none recorded", null],
+          [
+            "Supporting evidence",
+            candidate.evidence.supporting
+              .map((item) => item.slice(0, 12))
+              .join(", ") || "none recorded",
+            null,
+          ],
+          [
+            "Opposing evidence",
+            candidate.evidence.opposing
+              .map((item) => item.slice(0, 12))
+              .join(", ") || "none recorded",
+            null,
+          ],
+          [
+            "Unexplained items",
+            candidate.evidence.unexplained
+              .map((item) => item.slice(0, 12))
+              .join(", ") || "none recorded",
+            null,
+          ],
+          [
+            "Alternatives",
+            candidate.alternatives.join(", ") || "none recorded",
+            null,
+          ],
           ["Status", candidate.status, null],
         ]),
         related: [
-          ...candidate.evidence.supporting.map((itemId) => ({ recordId: itemRecordId(itemId), label: `Evidence ${itemId.slice(0, 12)}` })),
+          ...candidate.evidence.supporting.map((itemId) => ({
+            recordId: itemRecordId(itemId),
+            label: "Supporting evidence",
+          })),
           { recordId: "hypothesis-gate", label: "Hypothesis gate" },
           { recordId: "judge", label: "Fusion judge" },
           { recordId: "synthesizer", label: "Fusion synthesizer" },
@@ -776,16 +1061,34 @@ function recordsOf(context: {
       kind: "Gate",
       title: `Hypothesis Gate · ${gate.verdict}`,
       status: gate.verdict,
-      statusTone: gate.verdict === "pass" ? "positive" : gate.verdict === "fail" ? "negative" : "neutral",
+      statusTone:
+        gate.verdict === "pass"
+          ? "positive"
+          : gate.verdict === "fail"
+            ? "negative"
+            : "neutral",
       summary: `The gate evaluated ${gate.checks.length} deterministic checks and recorded ${gate.checks.filter((check) => check.result).length} passes.`,
       facts: factsOf([
         ["Verdict", gate.verdict, gate.source],
-        ["Evaluated", gate.evaluatedAt, null],
         ["Checks", String(gate.checks.length), null],
-        ["Failed", gate.checks.filter((check) => !check.result).map((check) => check.check).join(", ") || "none", null],
+        [
+          "Failed",
+          gate.checks
+            .filter((check) => !check.result)
+            .map((check) => check.check)
+            .join(", ") || "none",
+          null,
+        ],
       ]),
       related: [
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
       ],
       artifactLink: null,
       reference: null,
@@ -800,20 +1103,32 @@ function recordsOf(context: {
       kind: "Evidence",
       title: `${item.kind} evidence · ${item.backend}`,
       status: item.outcome,
-      statusTone: item.outcome === "ok" ? "positive" : item.outcome === "quarantined" ? "negative" : "neutral",
-      summary: `Observed ${item.observed_at} with trust "${item.trust}".`,
+      statusTone:
+        item.outcome === "ok"
+          ? "positive"
+          : item.outcome === "quarantined"
+            ? "negative"
+            : "neutral",
+      summary: `Observed ${readableTime(item.observed_at)} with ${item.trust} trust.`,
       facts: factsOf([
-        ["Evidence ID", item.id, null],
         ["Kind", item.kind, null],
         ["Backend", item.backend, null],
-        ["Observed", item.observed_at, null],
+        ["Observed", readableTime(item.observed_at), null],
         ["Trust", item.trust, null],
         ["Query", item.query ?? "unrecorded", null],
-        ["Fresh until", item.fresh_until ?? "unrecorded", null],
       ]),
       related: [
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
-        ...(proposal?.citations.some((citation) => citation.cited_item_ids.includes(item.id)) ?? false
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
+        ...((proposal?.citations.some((citation) =>
+          citation.cited_item_ids.includes(item.id)
+        ) ?? false)
           ? [{ recordId: "remediation", label: "Remediation" }]
           : []),
       ],
@@ -824,9 +1139,18 @@ function recordsOf(context: {
   }
 
   // Fusion records ---------------------------------------------------------
-  const participantEnvelopes = envelopesOf(store, incidentId, "fusion-participant-output", runId)
-  const judgeEnvelope = latestOf(envelopesOf(store, incidentId, "fusion-judge-output", runId))
-  const synthesizerEnvelope = latestOf(envelopesOf(store, incidentId, "fusion-synthesizer-output", runId))
+  const participantEnvelopes = envelopesOf(
+    store,
+    incidentId,
+    "fusion-participant-output",
+    runId
+  )
+  const judgeEnvelope = latestOf(
+    envelopesOf(store, incidentId, "fusion-judge-output", runId)
+  )
+  const synthesizerEnvelope = latestOf(
+    envelopesOf(store, incidentId, "fusion-synthesizer-output", runId)
+  )
 
   for (const envelope of participantEnvelopes) {
     const output = envelope.payload as FusionParticipantOutput
@@ -840,12 +1164,25 @@ function recordsOf(context: {
       facts: factsOf([
         ["Participant", output.participant_id, null],
         ["Hypotheses", output.hypotheses.map((h) => h.id).join(", "), null],
-        ["Objections", output.stated_objections.length > 0 ? String(output.stated_objections.length) : "none", null],
+        [
+          "Objections",
+          output.stated_objections.length > 0
+            ? String(output.stated_objections.length)
+            : "none",
+          null,
+        ],
       ]),
       related: [
         { recordId: "judge", label: "Fusion judge" },
         { recordId: "synthesizer", label: "Fusion synthesizer" },
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
       ],
       artifactLink: envelope.content_hash,
       reference: output.participant_id,
@@ -861,7 +1198,8 @@ function recordsOf(context: {
       title: `Judge ${output.judge_id}`,
       status: "Completed",
       statusTone: "info",
-      summary: "Compared participant outputs and recorded agreements, contradictions, blind spots, and unique findings.",
+      summary:
+        "Compared participant outputs and recorded agreements, contradictions, blind spots, and unique findings.",
       facts: factsOf([
         ["Judge", output.judge_id, null],
         ["Agreements", String(output.agreements.length), null],
@@ -873,9 +1211,19 @@ function recordsOf(context: {
         { recordId: "synthesizer", label: "Fusion synthesizer" },
         ...participantEnvelopes.map((envelope) => {
           const participant = envelope.payload as FusionParticipantOutput
-          return { recordId: `participant:${participant.participant_id}`, label: `Participant ${participant.participant_id}` }
+          return {
+            recordId: `participant:${participant.participant_id}`,
+            label: `Participant ${participant.participant_id}`,
+          }
         }),
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
       ],
       artifactLink: judgeEnvelope.content_hash,
       reference: output.judge_id,
@@ -891,19 +1239,40 @@ function recordsOf(context: {
       title: `Synthesizer ${output.synthesizer_id}`,
       status: "Completed",
       statusTone: "info",
-      summary: "Ranked the participant hypotheses and recommended next actions.",
+      summary:
+        "Ranked the participant hypotheses and recommended next actions.",
       facts: factsOf([
         ["Synthesizer", output.synthesizer_id, null],
-        ["Ranked", output.ranked_hypotheses.map((entry) => `${entry.rank}. ${entry.hypothesis.id}`).join(", "), null],
-        ["Next actions", output.next_actions.map((action) => action.procedure).join(", "), null],
+        [
+          "Ranked",
+          output.ranked_hypotheses
+            .map((entry) => `${entry.rank}. ${entry.hypothesis.id}`)
+            .join(", "),
+          null,
+        ],
+        [
+          "Next actions",
+          output.next_actions.map((action) => action.procedure).join(", "),
+          null,
+        ],
       ]),
       related: [
         { recordId: "judge", label: "Fusion judge" },
         ...participantEnvelopes.map((envelope) => {
           const participant = envelope.payload as FusionParticipantOutput
-          return { recordId: `participant:${participant.participant_id}`, label: `Participant ${participant.participant_id}` }
+          return {
+            recordId: `participant:${participant.participant_id}`,
+            label: `Participant ${participant.participant_id}`,
+          }
         }),
-        ...(hypothesisId === null ? [] : [{ recordId: `hypothesis:${hypothesisId}`, label: `Hypothesis ${hypothesisId}` }]),
+        ...(hypothesisId === null
+          ? []
+          : [
+              {
+                recordId: `hypothesis:${hypothesisId}`,
+                label: `Hypothesis ${hypothesisId}`,
+              },
+            ]),
       ],
       artifactLink: synthesizerEnvelope.content_hash,
       reference: output.synthesizer_id,
@@ -912,26 +1281,82 @@ function recordsOf(context: {
   }
 
   // Verification record ----------------------------------------------------
-  if (context.verification !== undefined && context.verificationEnvelope !== undefined) {
+  for (const envelope of context.reviewEnvelopes) {
+    const review = envelope.payload as ReviewReport
+    add({
+      id: `check:${review.role}`,
+      kind: "Review",
+      title: `${review.role} · ${review.reviewer}`,
+      status: review.status,
+      statusTone: review.status === "pass" ? "positive" : "negative",
+      summary:
+        review.findings.length === 0
+          ? "The reviewer recorded no findings."
+          : `${review.findings.length} finding${review.findings.length === 1 ? "" : "s"} recorded.`,
+      facts: factsOf([
+        ["Role", review.role, null],
+        ["Reviewer", review.reviewer, null],
+        ["Revision", String(review.revision), null],
+        ["Findings", String(review.findings.length), null],
+      ]),
+      related: [{ recordId: "verification", label: "Verification" }],
+      artifactLink: envelope.content_hash,
+      reference: review.candidate_hash,
+      raw: review,
+    })
+  }
+
+  for (const envelope of context.testEnvelopes) {
+    const test = envelope.payload as TestReport
+    add({
+      id: `check:${test.layer}`,
+      kind: "Test",
+      title: `${test.layer} · ${test.target}`,
+      status: test.outcome,
+      statusTone:
+        test.outcome === "pass" || test.outcome === "flaky-pass"
+          ? "positive"
+          : test.outcome === "not-run"
+            ? "neutral"
+            : "negative",
+      summary: `${test.tool} ${test.tool_version} recorded ${test.runs.length} run${test.runs.length === 1 ? "" : "s"}.`,
+      facts: factsOf([
+        ["Layer", test.layer, null],
+        ["Tool", `${test.tool} ${test.tool_version}`, null],
+        ["Target", test.target, null],
+        ["Runs", String(test.runs.length), null],
+        ["Coverage checked", test.coverage_checked ? "yes" : "no", null],
+      ]),
+      related: [{ recordId: "verification", label: "Verification" }],
+      artifactLink: envelope.content_hash,
+      reference: test.receipt_ref,
+      raw: test,
+    })
+  }
+
+  if (
+    context.verification !== undefined &&
+    context.verificationEnvelope !== undefined
+  ) {
     add({
       id: "verification",
       kind: "Verification",
       title: `Verification · ${context.verification.verdict}`,
       status: context.verification.verdict,
-      statusTone: context.verification.verdict === "pass" ? "positive" : "negative",
+      statusTone:
+        context.verification.verdict === "pass" ? "positive" : "negative",
       summary: context.verification.verdict_reason,
       facts: factsOf([
         ["Verdict", context.verification.verdict, null],
         ["Reason", context.verification.verdict_reason, null],
-        ["Sealed", context.verification.sealed_at, null],
-        ["Policy", context.verification.policy_version, null],
-        ["Hash binding", context.verification.hash_binding.match ? "candidate matches" : "candidate mismatch", null],
       ]),
       related: [
         { recordId: "remediation", label: "Remediation" },
         { recordId: "source-host", label: "Source-host receipt" },
         { recordId: "run", label: "Run record" },
-        ...(context.releaseGate === null ? [] : [{ recordId: "gate-release", label: "Release Gate" }]),
+        ...(context.releaseGate === null
+          ? []
+          : [{ recordId: "gate-release", label: "Release Gate" }]),
       ],
       artifactLink: context.verificationEnvelope.content_hash,
       reference: context.verification.candidate_hash,
@@ -947,13 +1372,20 @@ function recordsOf(context: {
       kind: "Gate",
       title: `Release Gate · ${gate.verdict}`,
       status: gate.verdict,
-      statusTone: gate.verdict === "pass" ? "positive" : gate.verdict === "fail" ? "negative" : "neutral",
+      statusTone:
+        gate.verdict === "pass"
+          ? "positive"
+          : gate.verdict === "fail"
+            ? "negative"
+            : "neutral",
       summary: `The gate evaluated ${gate.facts.length} deterministic facts.`,
       facts: factsOf([
         ["Verdict", gate.verdict, gate.source],
-        ["Evaluated", gate.evaluatedAt, null],
-        ["Candidate", gate.candidateHash ?? "unrecorded", null],
-        ["Facts", gate.facts.length > 0 ? String(gate.facts.length) : "not evaluated", null],
+        [
+          "Facts",
+          gate.facts.length > 0 ? String(gate.facts.length) : "not evaluated",
+          null,
+        ],
       ]),
       related: [
         { recordId: "verification", label: "Verification" },
@@ -971,26 +1403,244 @@ function recordsOf(context: {
     add({
       id: "recovery:point",
       kind: "Recovery Point",
-      title: `${proposal.recovery_point.id} · ${context.recoveryConsumed ? "consumed" : "drafted"}`,
+      title: context.recoveryConsumed
+        ? "Rollback remained available"
+        : "Rollback plan",
       status: context.recoveryConsumed ? "Consumed" : "Drafted",
       statusTone: context.recoveryConsumed ? "positive" : "neutral",
       summary: context.recoveryConsumed
         ? "Validated and consumed by the recorded release action."
         : "Recorded but never consumed; the run did not release.",
       facts: factsOf([
-        ["Recovery Point", proposal.recovery_point.id, null],
-        ["Changed surfaces", proposal.recovery_point.changed_surfaces.join(", "), null],
+        [
+          "Changed surfaces",
+          proposal.recovery_point.changed_surfaces.join(", "),
+          null,
+        ],
         ["State", context.recoveryConsumed ? "consumed" : "drafted", null],
       ]),
       related: [
         { recordId: "remediation", label: "Remediation" },
-        ...(context.releaseGate === null ? [] : [{ recordId: "gate-release", label: "Release Gate" }]),
+        ...(context.releaseGate === null
+          ? []
+          : [{ recordId: "gate-release", label: "Release Gate" }]),
       ],
       artifactLink: context.proposalEnvelope?.content_hash ?? null,
       reference: proposal.recovery_point.id,
       raw: proposal.recovery_point,
     })
   }
+
+  // Policy and audit records ----------------------------------------------
+  // The header opens these compact indexes in the inspector. They only point
+  // at events from the manifest-bound run, plus Incident-level events that do
+  // not belong to another attempt.
+  const runEvents = context.journalEvents.filter(
+    (event) => !("run_id" in event) || event.run_id === runId
+  )
+  const policyDecisions = runEvents.filter(
+    (event): event is Extract<JournalEvent, { type: "policy_decision" }> =>
+      event.type === "policy_decision"
+  )
+  const approvals = runEvents.filter(
+    (event): event is Extract<JournalEvent, { type: "approval_recorded" }> =>
+      event.type === "approval_recorded"
+  )
+  const humanActions = runEvents.filter(
+    (event): event is Extract<JournalEvent, { type: "human_action" }> =>
+      event.type === "human_action"
+  )
+  const auditTail = runEvents.slice(-12)
+  const indexedAuditEvents = [
+    ...auditTail,
+    ...humanActions.filter(
+      (event) =>
+        !auditTail.some((tailEvent) => tailEvent.sequence === event.sequence)
+    ),
+    ...policyDecisions.filter(
+      (event) =>
+        !auditTail.some((tailEvent) => tailEvent.sequence === event.sequence)
+    ),
+    ...approvals.filter(
+      (event) =>
+        !auditTail.some((tailEvent) => tailEvent.sequence === event.sequence)
+    ),
+  ].sort((left, right) => right.sequence - left.sequence)
+
+  for (const event of indexedAuditEvents) {
+    const extraFacts: [string, string, Source | null][] = []
+    let status = "Recorded"
+    let statusTone: InspectorRecord["statusTone"] = "neutral"
+
+    if (event.type === "policy_decision") {
+      status = event.decision
+      statusTone = event.decision === "approval-required" ? "warning" : "info"
+      extraFacts.push(
+        ["Decision", event.decision, journalSource(event.sequence)],
+        [
+          "Evaluated",
+          readableTime(event.evaluated_at),
+          journalSource(event.sequence),
+        ],
+        ["tzdb", event.tzdb_version, journalSource(event.sequence)],
+        [
+          "Reason",
+          event.reason ?? "No reason recorded",
+          journalSource(event.sequence),
+        ]
+      )
+      if (event.window !== undefined) {
+        const windows = event.window.windows
+          .map(
+            (window) =>
+              `${window.start_weekday} ${window.start_time}-${window.end_weekday} ${window.end_time}`
+          )
+          .join(", ")
+        extraFacts.push([
+          "Window",
+          `${event.window.iana_zone} ${windows}`,
+          journalSource(event.sequence),
+        ])
+      }
+    } else if (event.type === "approval_recorded") {
+      status = event.approval.action
+      statusTone = event.approval.action === "granted" ? "positive" : "warning"
+      extraFacts.push(
+        ["Approval", event.approval.approval_id, journalSource(event.sequence)],
+        [
+          "Approver",
+          event.approval.approver_identity,
+          journalSource(event.sequence),
+        ],
+        [
+          "Expires",
+          readableTime(event.approval.expiry),
+          journalSource(event.sequence),
+        ]
+      )
+    } else if (event.type === "human_action") {
+      status = "Human action"
+      statusTone = "warning"
+      extraFacts.push(
+        ["Action", event.action, journalSource(event.sequence)],
+        [
+          "Reason",
+          event.reason ?? "No reason recorded",
+          journalSource(event.sequence),
+        ]
+      )
+    }
+
+    const title = event.type.replaceAll("_", " ")
+    add({
+      id: `audit:${event.sequence}`,
+      kind: "Audit event",
+      title: `${title.charAt(0).toUpperCase()}${title.slice(1)}`,
+      status,
+      statusTone,
+      summary: `Journal sequence ${event.sequence}, recorded by ${event.actor.id} (${event.actor.kind}).`,
+      facts: factsOf([
+        ["Sequence", String(event.sequence), journalSource(event.sequence)],
+        ["Event", event.type, journalSource(event.sequence)],
+        [
+          "Actor",
+          `${event.actor.id} (${event.actor.kind})`,
+          journalSource(event.sequence),
+        ],
+        ["Policy", event.policy_version, journalSource(event.sequence)],
+        [
+          "Recorded",
+          readableTime(event.recorded_at),
+          journalSource(event.sequence),
+        ],
+        ...extraFacts,
+      ]),
+      related: [
+        { recordId: "audit:index", label: "Audit index" },
+        ...(event.type === "policy_decision" ||
+        event.type === "approval_recorded"
+          ? [{ recordId: "policy", label: "Policies and limits" }]
+          : []),
+      ],
+      artifactLink: null,
+      reference: `journal:${event.sequence}`,
+      raw: event,
+    })
+  }
+
+  const latestDecision = policyDecisions.at(-1) ?? null
+  add({
+    id: "policy",
+    kind: "Policy record",
+    title: "Policies and limits",
+    status: latestDecision?.decision ?? "No action decision",
+    statusTone:
+      latestDecision?.decision === "approval-required"
+        ? "warning"
+        : latestDecision === null
+          ? "neutral"
+          : "info",
+    summary:
+      latestDecision === null
+        ? "This run stopped before an execution-time policy decision. The recorded policy version and safety limits still apply."
+        : `${latestDecision.decision}. ${latestDecision.reason ?? "No reason was recorded."}`,
+    facts: factsOf([
+      [
+        "Policy version",
+        context.run.policyVersion ?? "Not recorded",
+        context.run.policySource,
+      ],
+      ["Attempt Limit", String(context.run.attemptLimit), null],
+      ["Execution decisions", String(policyDecisions.length), null],
+      ["Recorded approvals", String(approvals.length), null],
+      [
+        "Saved replay",
+        "Read-only. Policy edits, pause, cancel, and approvals are unavailable.",
+        null,
+      ],
+    ]),
+    related: [
+      ...[...policyDecisions].reverse().map((event) => ({
+        recordId: `audit:${event.sequence}`,
+        label: `Decision ${event.sequence}`,
+      })),
+      ...[...approvals].reverse().map((event) => ({
+        recordId: `audit:${event.sequence}`,
+        label: `Approval ${event.approval.approval_id}`,
+      })),
+      { recordId: "audit:index", label: "Audit index" },
+    ],
+    artifactLink: null,
+    reference: context.run.policyVersion,
+    raw: latestDecision,
+  })
+
+  add({
+    id: "audit:index",
+    kind: "Audit index",
+    title: "Saved journal audit",
+    status: `${runEvents.length} events`,
+    statusTone: "info",
+    summary:
+      auditTail.length === runEvents.length
+        ? "Every event for the selected run is indexed below in reverse sequence order."
+        : `The latest ${auditTail.length} of ${runEvents.length} events are indexed below. Policy decisions, approvals, and human actions remain linked even when they fall outside the tail.`,
+    facts: factsOf([
+      ["Run", runId, null],
+      ["Journal events", String(runEvents.length), null],
+      ["Tail shown", String(auditTail.length), null],
+      ["Human actions", String(humanActions.length), null],
+      ["Ordering", "Append-only by sequence", null],
+      ["Search", "Unavailable in saved replay", null],
+    ]),
+    related: indexedAuditEvents.map((event) => ({
+      recordId: `audit:${event.sequence}`,
+      label: `${event.sequence} ${event.type.replaceAll("_", " ")}`,
+    })),
+    artifactLink: null,
+    reference: runId,
+    raw: null,
+  })
 
   return records
 }
@@ -1006,7 +1656,7 @@ function recordsOf(context: {
 export function changeWorkspaceView(
   store: ReplayStore,
   incidentId: string,
-  evaluationTime: string,
+  evaluationTime: string
 ): ChangeWorkspaceView | null {
   const detailResult = getIncidentDetail(store, incidentId)
   if (!detailResult.ok) {
@@ -1025,29 +1675,69 @@ export function changeWorkspaceView(
   }
   const { runId, attempt, manifest, manifestSource } = binding
 
-  const proposalEnvelope = latestOf(envelopesOf(store, incidentId, "remediation-proposal", runId))
-  const proposal = proposalEnvelope === undefined ? undefined : (proposalEnvelope.payload as RemediationProposal)
+  const proposalEnvelope = latestOf(
+    envelopesOf(store, incidentId, "remediation-proposal", runId)
+  )
+  const proposal =
+    proposalEnvelope === undefined
+      ? undefined
+      : (proposalEnvelope.payload as RemediationProposal)
   const receiptEvent = sourceHostReceipt(detail)
-  const diagnosisEnvelope = latestOf(envelopesOf(store, incidentId, "diagnosis-report", runId))
-  const diagnosis = diagnosisEnvelope === undefined ? undefined : (diagnosisEnvelope.payload as DiagnosisReport)
-  const evidenceEnvelope = latestOf(envelopesOf(store, incidentId, "evidence-set", runId))
-  const evidenceItems = evidenceEnvelope === undefined ? [] : (evidenceEnvelope.payload as EvidenceSet).items
-  const verificationEnvelope = latestOf(envelopesOf(store, incidentId, "verification-report", runId))
-  const verification = verificationEnvelope === undefined ? undefined : (verificationEnvelope.payload as VerificationReport)
+  const sourceHostReceiptView = actionReceiptOf(receiptEvent)
+  const sourceHostRecord = sourceHostReceiptView?.source_host ?? null
+  const diagnosisEnvelope = latestOf(
+    envelopesOf(store, incidentId, "diagnosis-report", runId)
+  )
+  const diagnosis =
+    diagnosisEnvelope === undefined
+      ? undefined
+      : (diagnosisEnvelope.payload as DiagnosisReport)
+  const evidenceEnvelope = latestOf(
+    envelopesOf(store, incidentId, "evidence-set", runId)
+  )
+  const evidenceItems =
+    evidenceEnvelope === undefined
+      ? []
+      : (evidenceEnvelope.payload as EvidenceSet).items
+  const verificationEnvelope = latestOf(
+    envelopesOf(store, incidentId, "verification-report", runId)
+  )
+  const verification =
+    verificationEnvelope === undefined
+      ? undefined
+      : (verificationEnvelope.payload as VerificationReport)
 
   const runRecord = detail.runs.find((run) => run.runId === runId) ?? null
   const window = runWindow(detail, runId)
-  const lastPolicyEvent = [...detail.events].reverse().find((event) => "run_id" in event && event.run_id === runId)
+  const lastPolicyEvent = [...detail.events]
+    .reverse()
+    .find((event) => "run_id" in event && event.run_id === runId)
 
-  const diff = diffOf(proposal, proposalEnvelope === undefined ? null : artifactSource(proposalEnvelope))
+  const diff = diffOf(
+    sourceHostRecord?.diff_text ?? proposal?.diff?.diff_text ?? null,
+    sourceHostRecord === null
+      ? proposalEnvelope === undefined
+        ? null
+        : artifactSource(proposalEnvelope)
+      : receiptSource(sourceHostReceiptView?.receipt_id ?? "source-host")
+  )
   const releaseGate = base.releaseGate
   const hypothesisGate = base.hypothesisGate
   const releaseSucceededFlag = releaseSucceeded(detail, runId)
   const watchConfirmedFlag = watchConfirmed(store, incidentId, runId)
   const incidentClosed = detail.state === "closed"
+  const sourceHost = recordedSourceHostOf({
+    receipt: sourceHostReceiptView,
+    incidentId,
+    runId,
+    proposal,
+    merged: releaseSucceededFlag && watchConfirmedFlag && incidentClosed,
+  })
   const state = deriveChangeState({
     hasRemediation: proposal !== undefined,
-    verificationVerdict: verification?.verdict ?? null,
+    verificationVerdict:
+      verification?.verdict ??
+      (runRecord?.failureReason === "verification-failed" ? "fail" : null),
     releaseGate,
     releaseSucceeded: releaseSucceededFlag,
     watchConfirmed: watchConfirmedFlag,
@@ -1056,30 +1746,49 @@ export function changeWorkspaceView(
 
   const reviewEnvelopes = envelopesOf(store, incidentId, "review-report", runId)
   const testEnvelopes = envelopesOf(store, incidentId, "test-report", runId)
-  const reviewsPassed = reviewEnvelopes.filter((envelope) => (envelope.payload as ReviewReport).status === "pass").length
-  const testsPassed = testEnvelopes.filter((envelope) => (envelope.payload as TestReport).outcome === "pass").length
+  const reviewsPassed = reviewEnvelopes.filter(
+    (envelope) => (envelope.payload as ReviewReport).status === "pass"
+  ).length
+  const testsPassed = testEnvelopes.filter(
+    (envelope) => (envelope.payload as TestReport).outcome === "pass"
+  ).length
   const failedIds = [
     ...reviewEnvelopes
-      .filter((envelope) => (envelope.payload as ReviewReport).status !== "pass")
+      .filter(
+        (envelope) => (envelope.payload as ReviewReport).status !== "pass"
+      )
       .map((envelope) => (envelope.payload as ReviewReport).role),
     ...testEnvelopes
       .filter((envelope) => (envelope.payload as TestReport).outcome !== "pass")
       .map((envelope) => (envelope.payload as TestReport).layer),
   ]
 
-  const acceptedHypothesisId = proposal?.citations[0]?.hypothesis_id ?? diagnosis?.hypotheses.find((candidate) => candidate.status === "accepted")?.id ?? null
-  const acceptedHypothesis = diagnosis?.hypotheses.find((candidate) => candidate.id === acceptedHypothesisId)
-  const supporting: SupportingEvidenceView[] = (acceptedHypothesis?.evidence.supporting ?? []).map((itemId) => ({
+  const acceptedHypothesisId =
+    proposal?.citations[0]?.hypothesis_id ??
+    diagnosis?.hypotheses.find((candidate) => candidate.status === "accepted")
+      ?.id ??
+    null
+  const acceptedHypothesis = diagnosis?.hypotheses.find(
+    (candidate) => candidate.id === acceptedHypothesisId
+  )
+  const supporting: SupportingEvidenceView[] = (
+    acceptedHypothesis?.evidence.supporting ?? []
+  ).map((itemId) => ({
     itemId,
     recordId: itemRecordId(itemId),
     kind: evidenceItems.find((item) => item.id === itemId)?.kind ?? null,
     backend: evidenceItems.find((item) => item.id === itemId)?.backend ?? null,
-    observedAt: evidenceItems.find((item) => item.id === itemId)?.observed_at ?? null,
+    observedAt:
+      evidenceItems.find((item) => item.id === itemId)?.observed_at ?? null,
   }))
 
   const navigator: IncidentNavigatorRow[] = list.incidents.map((row) => {
-    const sourceIncident = store.incidents.find((candidate) => candidate.incidentId === row.incidentId)
-    const trigger = sourceIncident?.events.find((event) => event.type === "trigger_received")
+    const sourceIncident = store.incidents.find(
+      (candidate) => candidate.incidentId === row.incidentId
+    )
+    const trigger = sourceIncident?.events.find(
+      (event) => event.type === "trigger_received"
+    )
     return {
       incidentId: row.incidentId,
       state: row.state,
@@ -1087,15 +1796,24 @@ export function changeWorkspaceView(
       severity: row.severity,
       serviceName: row.serviceName,
       environmentName: row.environmentName,
-      signalName: trigger?.type === "trigger_received" ? trigger.trigger.signal_summary.name : null,
-      signalValue: trigger?.type === "trigger_received" ? formatRatio(trigger.trigger.signal_summary.value, trigger.trigger.signal_summary.unit) : null,
+      signalName:
+        trigger?.type === "trigger_received"
+          ? trigger.trigger.signal_summary.name
+          : null,
+      signalValue:
+        trigger?.type === "trigger_received"
+          ? formatRatio(
+              trigger.trigger.signal_summary.value,
+              trigger.trigger.signal_summary.unit
+            )
+          : null,
       firstTriggerAt: row.firstTriggerAt,
       latestOutcome:
         row.latestRun === null
           ? null
           : row.latestRun.failureReason !== null
             ? `failed · ${row.latestRun.failureReason}`
-            : row.latestRun.outcome ?? row.latestRun.state,
+            : (row.latestRun.outcome ?? row.latestRun.state),
       latestOutcomeSource: row.latestRunSource,
     }
   })
@@ -1117,25 +1835,36 @@ export function changeWorkspaceView(
       startedSource: window.startedSource,
       endedSource: window.endedSource,
       durationSeconds: window.durationSeconds,
-      durationSource: window.durationSeconds === null ? null : window.startedSource,
+      durationSource:
+        window.durationSeconds === null ? null : window.startedSource,
       binding: manifest === null ? "journal" : "manifest",
-      bindingReason: manifest === null ? "no capture manifest; the journal's progressed run is used" : "capture manifest",
+      bindingReason:
+        manifest === null
+          ? "no capture manifest; the journal's progressed run is used"
+          : "capture manifest",
       policyVersion: lastPolicyEvent?.policy_version ?? null,
-      policySource: lastPolicyEvent === undefined ? null : journalSource(lastPolicyEvent.sequence),
+      policySource:
+        lastPolicyEvent === undefined
+          ? null
+          : journalSource(lastPolicyEvent.sequence),
     },
     proposal,
     proposalEnvelope,
     receiptEvent,
+    sourceHost,
     diagnosis,
     evidenceItems,
     verification,
     verificationEnvelope,
+    reviewEnvelopes,
+    testEnvelopes,
     releaseGate,
     hypothesisGate,
     recoveryConsumed: releaseSucceededFlag,
     diff,
     manifest,
     manifestSource,
+    journalEvents: detail.events,
   })
 
   const change: ChangeSummaryView | null =
@@ -1159,7 +1888,10 @@ export function changeWorkspaceView(
           recoveryConsumed: releaseSucceededFlag,
           testPlan: proposal.test_plan,
           supporting,
-          artifactSource: proposalEnvelope === undefined ? null : artifactSource(proposalEnvelope),
+          artifactSource:
+            proposalEnvelope === undefined
+              ? null
+              : artifactSource(proposalEnvelope),
         }
 
   return {
@@ -1199,14 +1931,22 @@ export function changeWorkspaceView(
       startedSource: window.startedSource,
       endedSource: window.endedSource,
       durationSeconds: window.durationSeconds,
-      durationSource: window.durationSeconds === null ? null : window.startedSource,
+      durationSource:
+        window.durationSeconds === null ? null : window.startedSource,
       binding: manifest === null ? "journal" : "manifest",
-      bindingReason: manifest === null ? "no capture manifest; the journal's progressed run is used" : "capture manifest",
+      bindingReason:
+        manifest === null
+          ? "no capture manifest; the journal's progressed run is used"
+          : "capture manifest",
       policyVersion: lastPolicyEvent?.policy_version ?? null,
-      policySource: lastPolicyEvent === undefined ? null : journalSource(lastPolicyEvent.sequence),
+      policySource:
+        lastPolicyEvent === undefined
+          ? null
+          : journalSource(lastPolicyEvent.sequence),
     },
     change,
     diff,
+    sourceHost,
     reviewState: {
       reviewsPassed,
       reviewsTotal: reviewEnvelopes.length,
@@ -1221,8 +1961,46 @@ export function changeWorkspaceView(
               evaluatedAt: releaseGate.evaluatedAt,
               candidateHash: releaseGate.candidateHash,
               source: releaseGate.source,
+              facts: releaseGate.facts.map((fact) => ({
+                fact: fact.fact,
+                result: fact.result,
+              })),
             },
     },
+    checks: [
+      ...reviewEnvelopes.map((envelope) => {
+        const review = envelope.payload as ReviewReport
+        return {
+          id: review.role,
+          recordId: `check:${review.role}`,
+          kind: "Review" as const,
+          name: review.reviewer,
+          actor: review.reviewer,
+          tool: `revision ${review.revision}`,
+          result:
+            review.status === "pass"
+              ? ("passed" as const)
+              : ("failed" as const),
+        }
+      }),
+      ...testEnvelopes.map((envelope) => {
+        const test = envelope.payload as TestReport
+        return {
+          id: test.layer,
+          recordId: `check:${test.layer}`,
+          kind: "Test" as const,
+          name: test.target,
+          actor: test.tool,
+          tool: test.tool_version,
+          result:
+            test.outcome === "pass" || test.outcome === "flaky-pass"
+              ? ("passed" as const)
+              : test.outcome === "not-run"
+                ? ("not-run" as const)
+                : ("failed" as const),
+        }
+      }),
+    ],
     records,
     defaultRecordId: "source-host",
   }

@@ -43,6 +43,13 @@ export const SCHEMA_VERSION_1_1 = {
   const: "1.1",
 } as const;
 
+/** The capture-manifest schema version that freezes resolved provider
+ * metadata and the lifecycle attempt budget. */
+export const SCHEMA_VERSION_1_2 = {
+  type: "string",
+  const: "1.2",
+} as const;
+
 /** Identity of the actor that authored a journal event. */
 export const ACTOR_KIND = {
   enum: [

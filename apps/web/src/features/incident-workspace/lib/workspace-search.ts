@@ -8,8 +8,8 @@
  * level.
  *
  *   ?view=review|full   which workspace surface to show (default review)
- *   ?tab=summary|files  which Change Review tab is active (default summary)
- *   ?record=<recordId>  which record the inspector should open (default none)
+ *   ?tab=summary|files|checks|release  active Change Review tab (default summary)
+ *   ?record=<recordId>  which record the details dialog should open (default none)
  *
  * `parseWorkspaceSearch` is the route's `validateSearch`: it accepts the raw
  * query object and returns an all-optional state, so links to the route never
@@ -17,7 +17,7 @@
  */
 
 export type WorkspaceView = "review" | "full"
-export type ChangeReviewTab = "summary" | "files"
+export type ChangeReviewTab = "summary" | "files" | "checks" | "release"
 
 export interface WorkspaceSearchState {
   view: WorkspaceView
@@ -32,8 +32,13 @@ export const DEFAULT_VIEW: WorkspaceView = "review"
 export const DEFAULT_TAB: ChangeReviewTab = "summary"
 export const DEFAULT_RECORD = ""
 
-const isView = (value: unknown): value is WorkspaceView => value === "review" || value === "full"
-const isTab = (value: unknown): value is ChangeReviewTab => value === "summary" || value === "files"
+const isView = (value: unknown): value is WorkspaceView =>
+  value === "review" || value === "full"
+const isTab = (value: unknown): value is ChangeReviewTab =>
+  value === "summary" ||
+  value === "files" ||
+  value === "checks" ||
+  value === "release"
 
 /**
  * Parse the raw route query object into a complete, valid search state.
@@ -41,10 +46,13 @@ const isTab = (value: unknown): value is ChangeReviewTab => value === "summary" 
  * parameter is accepted verbatim and validated against the record registry
  * by the caller.
  */
-export function parseWorkspaceSearch(search: Record<string, unknown>): WorkspaceSearchInput {
+export function parseWorkspaceSearch(
+  search: Record<string, unknown>
+): WorkspaceSearchInput {
   const view = isView(search.view) ? search.view : DEFAULT_VIEW
   const tab = isTab(search.tab) ? search.tab : DEFAULT_TAB
-  const record = typeof search.record === "string" ? search.record : DEFAULT_RECORD
+  const record =
+    typeof search.record === "string" ? search.record : DEFAULT_RECORD
   return { view, tab, record }
 }
 
@@ -55,7 +63,7 @@ export function parseWorkspaceSearch(search: Record<string, unknown>): Workspace
  */
 export function workspaceHref(
   incidentId: string,
-  state: Partial<WorkspaceSearchState> = {},
+  state: Partial<WorkspaceSearchState> = {}
 ): string {
   const params = new URLSearchParams()
   if (state.view !== undefined && state.view !== DEFAULT_VIEW) {
@@ -68,20 +76,26 @@ export function workspaceHref(
     params.set("record", state.record)
   }
   const query = params.toString()
-  return query === "" ? `/incidents/${incidentId}` : `/incidents/${incidentId}?${query}`
+  return query === ""
+    ? `/incidents/${incidentId}`
+    : `/incidents/${incidentId}?${query}`
 }
 
 /**
  * Resolve the `record` search parameter against the registry of records the
  * projection built. Unknown ids fall back to the default record so the
- * inspector always opens on something real.
+ * selected-record preview always shows something real.
  */
 export function resolveRecordId(
   available: ReadonlySet<string>,
   recordParam: string | undefined,
-  defaultRecordId: string,
+  defaultRecordId: string
 ): string {
-  if (recordParam !== undefined && recordParam !== "" && available.has(recordParam)) {
+  if (
+    recordParam !== undefined &&
+    recordParam !== "" &&
+    available.has(recordParam)
+  ) {
     return recordParam
   }
   return defaultRecordId

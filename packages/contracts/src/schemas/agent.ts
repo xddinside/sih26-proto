@@ -7,7 +7,7 @@
  */
 import type { FromSchema } from "json-schema-to-ts";
 
-import { HASH_STRING, SCHEMA_VERSION_1, SCHEMA_VERSION_1_1, TIMESTAMP } from "./defs.js";
+import { HASH_STRING, SCHEMA_VERSION_1, SCHEMA_VERSION_1_1, SCHEMA_VERSION_1_2, TIMESTAMP } from "./defs.js";
 
 const NON_EMPTY_STRING = { type: "string", minLength: 1 } as const;
 const ROLE_NAME = { enum: [
@@ -313,8 +313,49 @@ export const captureManifestSchemaV1 = {
   },
 } as const;
 
+/** The catalog metadata the provider resolved at execution time, when the
+ * provider returns it. Sanitized at the Gateway boundary; never credentials. */
+const PROVIDER_METADATA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["provider", "id", "name"],
+  properties: {
+    provider: NON_EMPTY_STRING,
+    id: NON_EMPTY_STRING,
+    name: NON_EMPTY_STRING,
+    base_url: NON_EMPTY_STRING,
+    reasoning: { type: "boolean" },
+    input: { type: "array", items: NON_EMPTY_STRING },
+  },
+} as const;
+
+/** The capture manifest v1.2 freezes the resolved provider catalog metadata
+ * and the lifecycle attempt budget alongside the v1.1 identity fields. */
+export const captureManifestSchemaV2 = {
+  ...captureManifestSchema,
+  $id: "https://contracts.sih.dev/capture-manifest/1.2",
+  title: "Capture Manifest v1.2",
+  properties: {
+    ...captureManifestSchema.properties,
+    schema_version: SCHEMA_VERSION_1_2,
+    budgets: {
+      ...captureManifestSchema.properties.budgets,
+      required: [
+        ...captureManifestSchema.properties.budgets.required,
+        "attempt_limit",
+      ],
+      properties: {
+        ...captureManifestSchema.properties.budgets.properties,
+        attempt_limit: { type: "integer", minimum: 1 },
+      },
+    },
+    /** Resolved provider catalog metadata when the Gateway resolved it. */
+    provider_metadata: PROVIDER_METADATA,
+  },
+} as const;
+
 /** Wire type for a capture manifest. */
-export type CaptureManifest = FromSchema<typeof captureManifestSchema>;
+export type CaptureManifest = FromSchema<typeof captureManifestSchemaV2>;
 
 export type CaptureManifestRoleRecord = CaptureManifest["role_records"][number];
 

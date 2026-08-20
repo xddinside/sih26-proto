@@ -10,12 +10,34 @@ import type { ReactNode } from "react"
 
 import { StatePill } from "../../../incidents/components/badge"
 import type { Source } from "../../../incidents/lib/format"
-import { formatTimestamp, shortHash, sourceLabel } from "../../../incidents/lib/format"
+import { formatTimestamp, sourceLabel } from "../../../incidents/lib/format"
+import type { ChangeReviewTab } from "../../lib/workspace-search"
 import { workspaceHref } from "../../lib/workspace-search"
-import type { ChangeState, ChangeRunView, InspectorRecord  } from "../../lib/change-workspace-projection"
+import type {
+  ChangeState,
+  ChangeRunView,
+  InspectorRecord,
+} from "../../lib/change-workspace-projection"
+
+export function ReviewBadge({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode
+  tone?: "neutral" | "success" | "danger" | "warning" | "info"
+}) {
+  return (
+    <span className={`cr-badge cr-badge-${tone}`}>
+      {tone !== "neutral" ? <span aria-hidden="true" /> : null}
+      {children}
+    </span>
+  )
+}
 
 /** Tone of a Change state, mirrored from the prototype's settled mapping. */
-export function changeStateTone(state: ChangeState): "positive" | "negative" | "warning" | "info" | "neutral" {
+export function changeStateTone(
+  state: ChangeState
+): "positive" | "negative" | "warning" | "info" | "neutral" {
   switch (state) {
     case "Resolved":
     case "Verified":
@@ -37,19 +59,29 @@ export function ChangeStatePill({ state }: { state: ChangeState }) {
 }
 
 /** A cited source chip, matching `Citation` but without the imported coupling. */
-export function SourceChip({ source, label }: { source: Source; label?: string }) {
+export function SourceChip({
+  source,
+  label,
+}: {
+  source: Source
+  label?: string
+}) {
   return (
     <span
       title={source.ref}
-      aria-label={label === undefined ? sourceLabel(source) : `${label}: ${sourceLabel(source)}`}
-      className="inline-flex items-center rounded-none border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] leading-none text-muted-foreground whitespace-nowrap"
+      aria-label={
+        label === undefined
+          ? sourceLabel(source)
+          : `${label}: ${sourceLabel(source)}`
+      }
+      className="inline-flex items-center rounded-none border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] leading-none whitespace-nowrap text-muted-foreground"
     >
       {sourceLabel(source)}
     </span>
   )
 }
 
-/** An anchor that opens one record in the inspector. */
+/** An anchor that opens one record in the details dialog. */
 export function RecordAnchor({
   incidentId,
   recordId,
@@ -59,7 +91,7 @@ export function RecordAnchor({
 }: {
   incidentId: string
   recordId: string
-  tab?: "summary" | "files"
+  tab?: ChangeReviewTab
   children: ReactNode
   className?: string
 }) {
@@ -75,13 +107,24 @@ export function RecordAnchor({
 }
 
 /** The run context strip under the change header. */
-export function RunMetaStrip({ run, incident }: { run: ChangeRunView; incident: { service: string | null; environment: string | null } }) {
+export function RunMetaStrip({
+  run,
+  incident,
+}: {
+  run: ChangeRunView
+  incident: { service: string | null; environment: string | null }
+}) {
   const duration =
-    run.durationSeconds === null ? "duration unrecorded" : `${run.durationSeconds}s`
+    run.durationSeconds === null
+      ? "duration unrecorded"
+      : `${run.durationSeconds}s`
   return (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
       <span>
-        <strong className="text-foreground">{incident.environment ?? "environment unrecorded"}</strong> environment
+        <strong className="text-foreground">
+          {incident.environment ?? "environment unrecorded"}
+        </strong>{" "}
+        environment
       </span>
       <span>{incident.service ?? "service unrecorded"}</span>
       <span>
@@ -99,7 +142,15 @@ export function RunMetaStrip({ run, incident }: { run: ChangeRunView; incident: 
 }
 
 /** A fact row inside a record: label, value, and its citation when saved. */
-export function FactRow({ label, value, source }: { label: string; value: string; source: Source | null }) {
+export function FactRow({
+  label,
+  value,
+  source,
+}: {
+  label: string
+  value: string
+  source: Source | null
+}) {
   return (
     <div className="grid grid-cols-[minmax(0,10rem)_1fr] gap-x-4 gap-y-1 border-b border-border/60 py-2 text-sm last:border-b-0 max-sm:grid-cols-1">
       <dt className="text-muted-foreground">{label}</dt>
@@ -115,14 +166,6 @@ export function FactRow({ label, value, source }: { label: string; value: string
   )
 }
 
-/** The short display form of a hash-like reference. */
-export function shortRef(value: string | null): string {
-  if (value === null) {
-    return "unrecorded"
-  }
-  return value.startsWith("sha256:") ? shortHash(value) : value
-}
-
 /** The reference of a record, rendered as copyable text (no clipboard JS). */
 export function RecordReference({ record }: { record: InspectorRecord }) {
   if (record.reference === null) {
@@ -131,7 +174,7 @@ export function RecordReference({ record }: { record: InspectorRecord }) {
   return (
     <p className="mt-3 text-xs text-muted-foreground">
       reference{" "}
-      <code className="break-all rounded-none border border-border bg-muted/60 px-1 py-0.5 font-mono text-[11px]">
+      <code className="rounded-none border border-border bg-muted/60 px-1 py-0.5 font-mono text-[11px] break-all">
         {record.reference}
       </code>
     </p>

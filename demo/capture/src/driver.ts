@@ -96,6 +96,7 @@ import { RealAgentKit } from "./real-agents.js"
 import type { FrozenRehearsalEvidence } from "./frozen-evidence.js"
 import { deterministicStreamingProvider } from "./deterministic-provider.js"
 import * as shop from "./shop.js"
+import type { SourceHostAdapter, SourceHostPR } from "./source-host.js"
 
 /** Content revision of the effective Orchestrator tool catalog. Keeping this
  * derived from the typed names and parameter fields makes manifest provenance
@@ -145,6 +146,8 @@ export interface DriverOptions {
   signal?: AbortSignal
   /** Best-effort export hook for an interrupted/failed attempt. */
   onFailure?: (input: { incidentId: string; runId: string; cp: ControlPlane }) => Promise<void>
+  /** Run 1 creates and merges a PR; Run 2 intentionally records none. */
+  sourceHost?: SourceHostAdapter
 }
 
 /** The real-agent capture configuration (capture.ts --agents=real). */
@@ -1554,15 +1557,32 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     await completeStageWork("repair", repairLease, [remediationProposalRef])
 
     const repairEnv: ReceiptEnv = { incidentId, runId, leaseId: repairLease.leaseId, stage: "repair", candidateHash }
-    const prReceipt = actionReceipt(repairEnv, {
-      receiptId: RECEIPT_IDS.pr,
-      adapter: "source-host-adapter",
-      actionClass: "submit_remediation_pr",
-      command: `create branch remediate/incident-${incidentId} with the one-line card.js patch`,
-      target: { tenantId: TENANT_ID, environment: ENVIRONMENT, serviceName: SERVICE_NAME, expectedVersion: facts.seededImageId },
-      outcome: "ok",
-    })
-    await cp.recordBrokerReceipt(incidentId, runId, "repair", prReceipt, "action-broker")
+    let createdPR: SourceHostPR | null = null
+    if (run === 1 && options.sourceHost !== undefined) {
+      const diffText = kit === null ? implementerDiffText() : kit.implementerDiffText()
+      createdPR = await options.sourceHost.createPullRequest({
+        incidentId,
+        runId,
+        diffText,
+        changeDescription: acceptedRemediationText ?? "one-line card-type clause restoration in src/payment/card.js",
+      })
+      const real = createdPR.prUrl !== null
+      const prReceipt = actionReceipt(repairEnv, {
+        receiptId: RECEIPT_IDS.pr,
+        adapter: "source-host-adapter",
+        actionClass: "submit_remediation_pr",
+        command: real
+          ? `open pull request ${createdPR.branch} against main (${createdPR.prUrl})`
+          : `create branch ${createdPR.branch} with the one-line card.js patch`,
+        target: { tenantId: TENANT_ID, environment: ENVIRONMENT, serviceName: SERVICE_NAME, expectedVersion: facts.seededImageId },
+        outcome: "ok",
+        url: createdPR.prUrl ?? undefined,
+      })
+      await cp.recordBrokerReceipt(incidentId, runId, "repair", prReceipt, "action-broker")
+      console.log(`[capture] repair PR: ${createdPR.prUrl ?? createdPR.branch}`)
+    } else {
+      console.log(`[capture] repair PR skipped (run ${run} records no pull request)`)
+    }
     await repairProposals.sealArtifact({
       schemaId: "recovery-point",
       schemaVersion: "1.0",
@@ -2449,6 +2469,10 @@ export async function driveCapture(options: DriverOptions, config: Config): Prom
     }
     await watchProposals.completeRun("verified-remediation")
     console.log(`[capture] run completed: verified-remediation (incident resolved)`)
+
+    if (createdPR !== null && options.sourceHost !== undefined) {
+      await options.sourceHost.mergePullRequest(createdPR)
+    }
 
     // The confirmation window passes with no recurrence: resolved -> closed.
     const closed = await cp.confirmWindow(incidentId)

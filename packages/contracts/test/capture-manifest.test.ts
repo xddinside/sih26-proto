@@ -215,14 +215,10 @@ describe("capture-manifest verification", () => {
     }
   });
 
-  test("rejects a fixture provider_class", () => {
+  test("accepts an explicitly marked fixture full capture", () => {
     const files = validBundle({ provider_class: "fixture" });
     const result = verifySavedBundle({ files }, { evaluationTime: EVAL });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(codes(result)).toContain("MALFORMED_CONTRACT");
-      expect(messages(result).some((message) => message.includes("provider_class fixture"))).toBe(true);
-    }
+    expect(result.ok).toBe(true);
   });
 
   test("accepts a fixture provider_class for a rehearsal bundle", () => {

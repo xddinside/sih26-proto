@@ -4,9 +4,9 @@
  * numbers and facts; a model can cite a receipt but never forge one. Four
  * shaped variants: read, action, test, and CI.
  */
-import type { FromSchema } from "json-schema-to-ts";
+import type { FromSchema } from "json-schema-to-ts"
 
-import { HASH_STRING, STAGE_NAME, TIMESTAMP } from "./defs.js";
+import { HASH_STRING, STAGE_NAME, TIMESTAMP } from "./defs.js"
 
 const RECEIPT_COMMON = {
   receipt_id: { type: "string", minLength: 1 },
@@ -14,12 +14,20 @@ const RECEIPT_COMMON = {
   lease_id: { type: "string", minLength: 1 },
   stage: STAGE_NAME,
   candidate_hash: HASH_STRING,
-} as const;
+} as const
 
 const readReceipt = {
   type: "object",
   additionalProperties: false,
-  required: ["kind", "receipt_id", "idempotency_key", "lease_id", "stage", "request", "result"],
+  required: [
+    "kind",
+    "receipt_id",
+    "idempotency_key",
+    "lease_id",
+    "stage",
+    "request",
+    "result",
+  ],
   properties: {
     kind: { const: "read" },
     ...RECEIPT_COMMON,
@@ -48,14 +56,16 @@ const readReceipt = {
       additionalProperties: false,
       required: ["outcome", "content_hash", "observed_at"],
       properties: {
-        outcome: { enum: ["ok", "unresolved", "expired", "quarantined", "error"] },
+        outcome: {
+          enum: ["ok", "unresolved", "expired", "quarantined", "error"],
+        },
         content_hash: HASH_STRING,
         observed_at: TIMESTAMP,
         row_count: { type: "integer", minimum: 0 },
       },
     },
   },
-} as const;
+} as const
 
 const actionReceipt = {
   type: "object",
@@ -96,11 +106,45 @@ const actionReceipt = {
       },
     },
     permit_id: { type: "string", minLength: 1 },
+    /** Optional source-host URL recorded by issue #32's adapter. */
+    url: { type: "string", format: "uri" },
+    source_host: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "repository",
+        "pull_request_number",
+        "pull_request_url",
+        "title",
+        "branch",
+        "base_ref",
+        "head_ref",
+        "state",
+        "diff_text",
+      ],
+      properties: {
+        provider: { type: "string", minLength: 1 },
+        repository: { type: "string", minLength: 1 },
+        pull_request_number: { type: "integer", minimum: 1 },
+        pull_request_url: { type: "string", format: "uri" },
+        title: { type: "string", minLength: 1 },
+        branch: { type: "string", minLength: 1 },
+        base_ref: { type: "string", minLength: 1 },
+        head_ref: { type: "string", minLength: 1 },
+        state: { enum: ["open", "closed", "merged"] },
+        merged_at: { type: ["string", "null"], format: "date-time" },
+        checks_passed: { type: "integer", minimum: 0 },
+        checks_total: { type: "integer", minimum: 0 },
+        approvals: { type: "integer", minimum: 0 },
+        diff_text: { type: "string", minLength: 1 },
+      },
+    },
     outcome: { enum: ["ok", "failed", "error", "unknown"] },
     executed_at: TIMESTAMP,
     error: { type: "string" },
   },
-} as const;
+} as const
 
 const testReceipt = {
   type: "object",
@@ -122,7 +166,23 @@ const testReceipt = {
   properties: {
     kind: { const: "test" },
     ...RECEIPT_COMMON,
-    layer: { enum: ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13"] },
+    layer: {
+      enum: [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T9",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+      ],
+    },
     tool: { type: "string", minLength: 1 },
     tool_version: { type: "string", minLength: 1 },
     target: { type: "string", minLength: 1 },
@@ -143,7 +203,7 @@ const testReceipt = {
     outcome: { enum: ["pass", "fail", "flaky-pass", "error", "not-run"] },
     flaky: { type: "boolean" },
   },
-} as const;
+} as const
 
 const ciReceipt = {
   type: "object",
@@ -181,14 +241,14 @@ const ciReceipt = {
     artifact_digest: HASH_STRING,
     finished_at: TIMESTAMP,
   },
-} as const;
+} as const
 
 /** The JSON Schema for read, action, test, and CI broker receipts. */
 export const brokerReceiptSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   title: "Broker Receipt v1",
   oneOf: [readReceipt, actionReceipt, testReceipt, ciReceipt],
-} as const;
+} as const
 
 /** The wire shape of a broker receipt. */
-export type BrokerReceipt = FromSchema<typeof brokerReceiptSchema>;
+export type BrokerReceipt = FromSchema<typeof brokerReceiptSchema>

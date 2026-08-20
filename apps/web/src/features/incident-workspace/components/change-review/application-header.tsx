@@ -1,31 +1,16 @@
-/**
- * The application header for the Change Review: brand, primary nav, the
- * saved-run badge, and the saved Incident selector. Every navigation target
- * is a plain anchor; the selector is a `<details>` menu with one anchor per
- * saved Incident from the verified bundle.
- */
-import { SavedBadge, StatePill } from "../../../incidents/components/badge"
+import { IconChevronDown } from "@tabler/icons-react"
+
 import { abbreviate } from "../../../incidents/lib/format"
+import type { ChangeReviewTab } from "../../lib/workspace-search"
 import { workspaceHref } from "../../lib/workspace-search"
 import type { IncidentNavigatorRow } from "../../lib/change-workspace-projection"
+import { ReviewBadge } from "./review-primitives"
+import { DownloadButton } from "./download-button"
 
-function incidentStateTone(state: string | null) {
-  switch (state) {
-    case "closed":
-      return "positive" as const
-    case "open":
-      return "warning" as const
-    default:
-      return "neutral" as const
-  }
-}
-
-/** The current Incident's label for the selector summary. */
 export function incidentShortId(incidentId: string): string {
   return abbreviate(incidentId, 12)
 }
 
-/** One saved Incident row in the selector menu. */
 function IncidentOption({
   incidentId,
   current,
@@ -36,23 +21,23 @@ function IncidentOption({
   incidentId: string
   current: boolean
   row: IncidentNavigatorRow
-  tab?: "summary" | "files"
+  tab?: ChangeReviewTab
   record?: string
 }) {
   return (
     <a
       href={workspaceHref(incidentId, { tab, record })}
       aria-current={current ? "page" : undefined}
-      className="block border-b border-border/60 px-3 py-2 text-sm last:border-b-0 hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      className="cr-incident-option"
     >
-      <span className="flex items-center justify-between gap-2">
-        <strong className="font-mono text-xs">{incidentShortId(incidentId)}</strong>
-        <StatePill tone={incidentStateTone(row.state)}>{row.state ?? "state unrecorded"}</StatePill>
+      <span className="cr-incident-option-head">
+        <strong>{incidentShortId(incidentId)}</strong>
+        <ReviewBadge tone={row.state === "closed" ? "success" : "warning"}>
+          {row.state ?? "unrecorded"}
+        </ReviewBadge>
       </span>
-      <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-        {row.signalName ?? "signal unrecorded"}
-        {row.latestOutcome !== null ? ` · ${row.latestOutcome}` : ""}
-      </span>
+      <span>{row.signalName ?? "signal unrecorded"}</span>
+      <small>{row.latestOutcome ?? "outcome unrecorded"}</small>
     </a>
   )
 }
@@ -60,68 +45,88 @@ function IncidentOption({
 export function ApplicationHeader({
   incidentId,
   navigator,
-  captureTime,
   tab,
   record,
+  exportData,
 }: {
   incidentId: string
   navigator: IncidentNavigatorRow[]
   captureTime: string
-  tab?: "summary" | "files"
+  tab?: ChangeReviewTab
   record?: string
+  exportData: unknown
 }) {
-  const current = navigator.find((row) => row.incidentId === incidentId)
+  const policyActive = record === "policy"
+  const auditActive = record === "audit:index" || record?.startsWith("audit:")
   return (
-    <header className="border-b border-border bg-card">
-      <div className="container mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
-        <a href="/" className="flex items-center gap-2 text-sm font-semibold tracking-wide hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-          <span className="flex h-7 w-7 items-center justify-center border border-primary/40 bg-primary/5 text-xs font-bold text-primary" aria-hidden="true">
-            IR
-          </span>
-          Incident Response
+    <header className="cr-app-header">
+      <a className="cr-skip-link" href="#workspace-main">
+        Skip to incident
+      </a>
+      <a href="/" className="cr-brand">
+        <span className="cr-brand-mark" aria-hidden="true">
+          IR
+        </span>
+        <span>Incident Response</span>
+      </a>
+      <nav className="cr-primary-nav" aria-label="Primary">
+        <a
+          href="/"
+          aria-current={!policyActive && !auditActive ? "page" : undefined}
+        >
+          Incidents
         </a>
-        <nav aria-label="Primary" className="flex items-center gap-3 text-sm">
-          <a href="/" aria-current="page" className="underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
-            Incidents
-          </a>
-        </nav>
-        <div className="ml-auto flex items-center gap-3">
-          <SavedBadge captureTime={captureTime} />
-          <details className="group relative">
-            <summary className="flex cursor-pointer list-none items-center gap-2 rounded-none border border-border px-3 py-1.5 text-sm [&::-webkit-details-marker]:hidden">
-              <span className="flex flex-col leading-tight">
-                <small className="text-[10px] uppercase tracking-wide text-muted-foreground">Incident</small>
-                <strong className="font-mono text-xs">{incidentShortId(incidentId)}</strong>
-              </span>
-              <span aria-hidden="true" className="text-muted-foreground transition-transform group-open:rotate-180">
-                ▾
-              </span>
-            </summary>
-            <div className="absolute right-0 z-20 mt-1 w-72 border border-border bg-card shadow-lg">
-              <div className="border-b border-border px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Saved Incidents</p>
-                <p className="text-xs text-muted-foreground">{navigator.length} in this bundle</p>
+        <a
+          href={workspaceHref(incidentId, { tab, record: "policy" })}
+          aria-current={policyActive ? "page" : undefined}
+        >
+          Policies
+        </a>
+        <a
+          href={workspaceHref(incidentId, { tab, record: "audit:index" })}
+          aria-current={auditActive ? "page" : undefined}
+        >
+          Audit
+        </a>
+      </nav>
+      <div className="cr-header-actions">
+        <ReviewBadge tone="info">
+          <span className="cr-sr-only">Saved Demo Run. </span>Captured run
+        </ReviewBadge>
+        <details className="cr-incident-nav">
+          <summary aria-label="Browse incidents">
+            <span>
+              <small>Incident</small>
+              <strong>{incidentShortId(incidentId)}</strong>
+            </span>
+            <IconChevronDown size={15} stroke={1.75} aria-hidden="true" />
+          </summary>
+          <div className="cr-incident-menu">
+            <div className="cr-incident-menu-head">
+              <div>
+                <p className="cr-eyebrow">Workspace</p>
+                <h2>Incidents</h2>
               </div>
-              <div className="max-h-72 overflow-y-auto">
-                {navigator.map((row) => (
-                  <IncidentOption
-                    key={row.incidentId}
-                    incidentId={row.incidentId}
-                    current={row.incidentId === incidentId}
-                    row={row}
-                    tab={tab}
-                    record={record}
-                  />
-                ))}
-              </div>
-              {current === undefined ? (
-                <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-                  {incidentId} is not part of this saved bundle.
-                </p>
-              ) : null}
+              <ReviewBadge>{navigator.length} saved</ReviewBadge>
             </div>
-          </details>
-        </div>
+            <div className="cr-incident-options" aria-label="Saved incidents">
+              {navigator.map((row) => (
+                <IncidentOption
+                  key={row.incidentId}
+                  incidentId={row.incidentId}
+                  current={row.incidentId === incidentId}
+                  row={row}
+                  tab={tab}
+                  record={record}
+                />
+              ))}
+            </div>
+          </div>
+        </details>
+        <DownloadButton
+          data={exportData}
+          fileName={`${incidentId}-change-review.json`}
+        />
       </div>
     </header>
   )

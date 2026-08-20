@@ -1,17 +1,14 @@
-/**
- * The Change Review workspace surface: application header, change header,
- * the Summary / Files changed tabs, the record inspector, and the replay
- * provenance footer. One `ChangeWorkspaceView` projection drives everything;
- * the tabs and the inspector selection are plain search parameters.
- */
 import type { ChangeReviewTab } from "../../lib/workspace-search"
 import { resolveRecordId, workspaceHref } from "../../lib/workspace-search"
 import type { ChangeWorkspaceView } from "../../lib/change-workspace-projection"
 import { ApplicationHeader } from "./application-header"
 import { ChangeHeader } from "./change-header"
+import { ChecksTab } from "./checks-tab"
 import { FilesTab } from "./files-tab"
-import { RecordInspectorPanel } from "./record-inspector"
+import { RecordDialog, RecordInspectorPanel } from "./record-inspector"
+import { ReleaseTab } from "./release-tab"
 import { SummaryTab } from "./summary-tab"
+import "./change-review.css"
 
 function TabBar({
   view,
@@ -24,60 +21,55 @@ function TabBar({
 }) {
   const tabs: { id: ChangeReviewTab; label: string; count?: number }[] = [
     { id: "summary", label: "Summary" },
-    { id: "files", label: "Files changed", count: view.diff.state === "parsed" ? view.diff.files.length : 0 },
+    {
+      id: "files",
+      label: "Files changed",
+      count: view.diff.state === "parsed" ? view.diff.files.length : 0,
+    },
+    {
+      id: "checks",
+      label: "Checks",
+      count: view.sourceHost?.checksTotal ?? view.checks.length,
+    },
+    { id: "release", label: "Release" },
   ]
   return (
-    <div role="group" aria-label="Change records" className="flex border-b border-border">
-      {tabs.map((tab) => {
-        const active = tab.id === activeTab
-        return (
-          <a
-            key={tab.id}
-            href={workspaceHref(view.incident.incidentId, { tab: tab.id, record })}
-            aria-current={active ? "page" : undefined}
-            className={`border-b-2 px-4 py-2 text-sm font-medium underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-              active ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-            {tab.count !== undefined && tab.count > 0 ? (
-              <span className="ml-1.5 font-mono text-xs text-muted-foreground">{tab.count}</span>
-            ) : null}
-          </a>
-        )
-      })}
+    <div role="tablist" aria-label="Change records" className="cr-tabs">
+      {tabs.map((item) => (
+        <a
+          key={item.id}
+          role="tab"
+          href={workspaceHref(view.incident.incidentId, {
+            tab: item.id,
+            record,
+          })}
+          aria-selected={item.id === activeTab}
+          className={item.id === activeTab ? "active" : undefined}
+        >
+          {item.label}
+          {item.count !== undefined ? <span>{item.count}</span> : null}
+        </a>
+      ))}
     </div>
   )
 }
 
-/** The replay provenance footer, mirroring the legacy workspace's section. */
-export function ChangeReviewProvenance({ view }: { view: ChangeWorkspaceView }) {
-  return (
-    <section aria-labelledby="cr-replay-meta-title" className="border border-border bg-card">
-      <header className="border-b border-border px-4 py-3">
-        <h2 id="cr-replay-meta-title" className="font-heading text-sm font-semibold tracking-wide uppercase">
-          Replay provenance
-        </h2>
-      </header>
-      <div className="px-4 py-3">
-        <p className="text-sm text-muted-foreground">
-          format {view.meta.formatVersion} · captured {view.meta.captureTime} · evaluation time {view.meta.evaluationTime} ·{" "}
-          {view.meta.incidentCount} saved Incidents · run {view.run.runId} bound by {view.run.bindingReason}
-          {view.meta.manifestId !== null ? ` · capture manifest ${view.meta.manifestId}` : ""}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {view.meta.providerClass !== null
-            ? `provider ${view.meta.providerClass} · model ${view.meta.model ?? "unrecorded"} · reasoning ${view.meta.reasoning ?? "unrecorded"} · `
-            : ""}
-          every record fact replays a journal sequence, receipt, or sealed artifact; saved-run controls cannot submit, and
-          no live agent, broker, or detector ran.
-        </p>
-      </div>
-    </section>
-  )
+function ActiveTab({
+  view,
+  tab,
+  selectedFileId,
+}: {
+  view: ChangeWorkspaceView
+  tab: ChangeReviewTab
+  selectedFileId: string | null
+}) {
+  if (tab === "summary") return <SummaryTab view={view} />
+  if (tab === "files")
+    return <FilesTab view={view} selectedFileId={selectedFileId} />
+  if (tab === "checks") return <ChecksTab view={view} />
+  return <ReleaseTab view={view} />
 }
 
-/** The Change Review for one Incident and its search state. */
 export function ChangeReviewView({
   view,
   tab,
@@ -87,38 +79,52 @@ export function ChangeReviewView({
   tab: ChangeReviewTab
   record: string
 }) {
-  const selectedRecord = resolveRecordId(new Set(Object.keys(view.records)), record, view.defaultRecordId)
+  const activeRecord = record !== "" && record in view.records ? record : ""
+  const selectedRecord = resolveRecordId(
+    new Set(Object.keys(view.records)),
+    activeRecord,
+    view.defaultRecordId
+  )
   const selectedFileId =
-    tab === "files" && record !== "" && record.startsWith("file:") && record in view.records ? record : null
+    tab === "files" && activeRecord.startsWith("file:") ? activeRecord : null
+  const dialogRecord = activeRecord === "" ? null : view.records[activeRecord]
   return (
-    <div className="min-h-screen bg-background">
+    <div className="change-review-shell">
       <ApplicationHeader
         incidentId={view.incident.incidentId}
         navigator={view.navigator}
         captureTime={view.meta.captureTime}
         tab={tab}
-        record={selectedRecord}
+        record={activeRecord}
+        exportData={view}
       />
-      <main id="workspace-main" className="container mx-auto max-w-6xl px-4 py-6">
+      <main id="workspace-main" className="cr-page">
         <ChangeHeader view={view} />
-        <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]">
-          <div className="min-w-0">
-            <TabBar view={view} activeTab={tab} record={selectedRecord} />
-            <div className="mt-4">
-              {tab === "summary" ? <SummaryTab view={view} /> : <FilesTab view={view} selectedFileId={selectedFileId} />}
+        <div className="cr-main-grid">
+          <div className="cr-records">
+            <TabBar view={view} activeTab={tab} record={activeRecord} />
+            <div className="cr-pane">
+              <ActiveTab
+                view={view}
+                tab={tab}
+                selectedFileId={selectedFileId}
+              />
             </div>
           </div>
-          <RecordInspectorPanel view={view} record={view.records[selectedRecord]} />
-        </div>
-        <div className="mt-6">
-          <ChangeReviewProvenance view={view} />
+          <RecordInspectorPanel
+            view={view}
+            record={view.records[selectedRecord]}
+            tab={tab}
+          />
         </div>
       </main>
+      {dialogRecord !== null ? (
+        <RecordDialog view={view} record={dialogRecord} tab={tab} />
+      ) : null}
     </div>
   )
 }
 
-/** The named-gap state when no run can be bound to the Incident. */
 export function ChangeReviewGap({
   incidentId,
   reason,
@@ -127,22 +133,12 @@ export function ChangeReviewGap({
   reason: string
 }) {
   return (
-    <main className="container mx-auto max-w-5xl px-4 py-8">
-      <nav aria-label="Breadcrumb" className="text-sm text-muted-foreground">
-        <a href="/" className="hover:underline">
-          Incidents
-        </a>
-        <span aria-hidden="true"> / </span>
-        <span className="font-mono">{incidentId}</span>
-      </nav>
-      <section className="mt-6 border border-border bg-card px-4 py-3" role="status">
-        <p className="text-sm">
-          <strong>No run to review.</strong> {reason} The long-form workspace stays available at{" "}
-          <a href={workspaceHref(incidentId, { view: "full" })} className="underline-offset-2 hover:underline">
-            view=full
-          </a>
-          .
-        </p>
+    <main className="cr-gap">
+      <a href="/">Incidents</a> / <span>{incidentId}</span>
+      <section role="status">
+        <strong>No run to review.</strong> {reason} The long-form workspace
+        stays available at{" "}
+        <a href={workspaceHref(incidentId, { view: "full" })}>view=full</a>.
       </section>
     </main>
   )

@@ -25,8 +25,12 @@ A possible root cause ranked by how well it explains the Evidence Set.
 _Avoid_: Root cause, diagnosis, guess
 
 **Fusion Diagnosis**:
-A Diagnose-stage method adapted from the local Fusion Agent Harness. Two or more independent participants inspect the same Incident task and Evidence Set, a Judge compares their outputs, and a Synthesizer produces ranked Hypotheses, contradictions, and missing evidence for the Orchestrator to test.
+A Diagnose-stage method adapted from the local Fusion Agent Harness. Two or more independent participants inspect the same Incident task and Evidence Set from different broad Investigation Perspectives, a Judge compares their outputs, and a Synthesizer produces ranked Hypotheses, contradictions, and missing evidence for the Orchestrator to test.
 _Avoid_: Majority vote, confidence vote, agent debate
+
+**Investigation Perspective**:
+A broad diagnosis lens assigned to one Fusion participant to increase coverage without assigning a cause or limiting which Hypotheses it can propose. Every participant receives the same task and Evidence Set and remains free to reject its initial perspective.
+_Avoid_: Assigned Hypothesis, specialist verdict, fixed cause
 
 **Remediation**:
 A reversible action intended to restore service or remove an Incident. It can change operations, configuration, infrastructure, or code.
@@ -80,12 +84,16 @@ _Avoid_: Server, backend, main service
 The short-lived run environment that hosts one Orchestrator and its subagents for an Incident attempt.
 _Avoid_: Orchestrator, subagent, container
 
+**Test Agent**:
+A skilled subagent that runs one applicable verification layer through permitted deterministic test tools and produces a Test Report from their receipts. The test result, not the Test Agent, owns pass or fail.
+_Avoid_: Test runner, verification gate
+
 **Incident Run**:
 One Orchestrator-led execution of the Incident workflow, including its delegated analysis, repair, review, release, and Watch work.
 _Avoid_: Worker, agent session, job
 
 **Incident Workspace**:
-The web view where a human inspects an Incident, its Evidence Set, Incident Runs, policy decisions, Remediation, Release Gate, Watch results, and Recovery Point.
+The operator-facing web view where a human inspects an Incident, its Evidence Set, Incident Runs, policy decisions, Remediation, Release Gate, Watch results, and Recovery Point, and takes permitted human actions.
 _Avoid_: Monitoring dashboard, agent logs
 
 **Solution Contract**:
@@ -93,7 +101,7 @@ The complete product proposed in the pitch, including its company deployment, in
 _Avoid_: Future scope, roadmap, demo scope
 
 **Demo Profile**:
-The local prototype configuration used to produce saved Incident Runs for the short presentation demo. It may remove time and cost limits while keeping the workflow and evidence real.
+The local prototype configuration used to execute and save real Incident Runs before the short presentation demo. During the presentation, the Incident Workspace replays the saved Demo Runs; the Demo Profile may remove time and cost limits while keeping the workflow and evidence real.
 _Avoid_: Production mode, product scope, mock demo
 
 **Demo Run**:
@@ -107,3 +115,7 @@ _Avoid_: Final review agent, confidence check
 **Recovery Point**:
 The recorded code, deployment, configuration, feature-flag, and infrastructure state needed to reverse a Remediation as fully as the connected systems permit.
 _Avoid_: Git revert, backup
+
+**Rollback**:
+A controlled recovery action that uses a valid Recovery Point to reverse a specific failed Release when the Incident state, Authority Mode, Automation Policy, Action Gate, and target version permit it.
+_Avoid_: Undo, revert button, previous version

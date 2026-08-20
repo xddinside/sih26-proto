@@ -62,17 +62,29 @@ function stripPrefix(line: string): string {
 }
 
 /** Parse the old/new paths out of a `diff --git` header line. */
-function pathsFromGitHeader(line: string): { oldPath: string | null; newPath: string | null } {
+function pathsFromGitHeader(line: string): {
+  oldPath: string | null
+  newPath: string | null
+} {
   const rest = line.slice("diff --git ".length).trim()
   const rename = rest.split(" => ")
   if (rename.length === 2) {
-    return { oldPath: rename[0].replace(/^a\//, ""), newPath: rename[1].replace(/^b\//, "") }
+    return {
+      oldPath: rename[0].replace(/^a\//, ""),
+      newPath: rename[1].replace(/^b\//, ""),
+    }
   }
   const separator = rest.lastIndexOf(" b/")
   if (rest.startsWith("a/") && separator !== -1) {
-    return { oldPath: rest.slice(2, separator), newPath: rest.slice(separator + 3) }
+    return {
+      oldPath: rest.slice(2, separator),
+      newPath: rest.slice(separator + 3),
+    }
   }
-  return { oldPath: rest.replace(/^a\//, ""), newPath: rest.replace(/^b\//, "") }
+  return {
+    oldPath: rest.replace(/^a\//, ""),
+    newPath: rest.replace(/^b\//, ""),
+  }
 }
 
 /**
@@ -81,7 +93,11 @@ function pathsFromGitHeader(line: string): { oldPath: string | null; newPath: st
  */
 export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
   if (diffText.trim() === "") {
-    return { ok: false, reason: "absent", note: "the recorded diff text is empty" }
+    return {
+      ok: false,
+      reason: "absent",
+      note: "the recorded diff text is empty",
+    }
   }
   const files: DiffFile[] = []
   let current: DiffFile | null = null
@@ -96,13 +112,24 @@ export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
     hunk = null
   }
 
-  for (const raw of diffText.split("\n")) {
+  const rawLines = diffText.split("\n")
+  for (const [index, raw] of rawLines.entries()) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw
+    if (line === "" && index === rawLines.length - 1) {
+      continue
+    }
 
     if (line.startsWith("diff --git ")) {
       closeHunk()
       const paths = pathsFromGitHeader(line)
-      current = { path: null, oldPath: paths.oldPath, newPath: paths.newPath, additions: 0, deletions: 0, hunks: [] }
+      current = {
+        path: null,
+        oldPath: paths.oldPath,
+        newPath: paths.newPath,
+        additions: 0,
+        deletions: 0,
+        hunks: [],
+      }
       files.push(current)
       continue
     }
@@ -110,10 +137,18 @@ export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
     if (line.startsWith("@@ ")) {
       const match = HUNK_HEADER.exec(line)
       if (match === null) {
-        return { ok: false, reason: "unparseable", note: `malformed hunk header ${JSON.stringify(line)}` }
+        return {
+          ok: false,
+          reason: "unparseable",
+          note: `malformed hunk header ${JSON.stringify(line)}`,
+        }
       }
       if (current === null) {
-        return { ok: false, reason: "unparseable", note: `hunk header appears before any file header: ${JSON.stringify(line)}` }
+        return {
+          ok: false,
+          reason: "unparseable",
+          note: `hunk header appears before any file header: ${JSON.stringify(line)}`,
+        }
       }
       closeHunk()
       hunk = { header: line, lines: [] }
@@ -122,11 +157,30 @@ export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
       continue
     }
 
-    if ((line.startsWith("--- ") || line.startsWith("+++ ")) && hunk === null && current !== null) {
+    // The implementer artifact captured by issue #32 is a valid unified diff
+    // with `---`/`+++` headers but no optional `diff --git` prelude.
+    if (line.startsWith("--- ") && hunk === null && current === null) {
+      current = {
+        path: null,
+        oldPath: null,
+        newPath: null,
+        additions: 0,
+        deletions: 0,
+        hunks: [],
+      }
+      files.push(current)
+    }
+    if (
+      (line.startsWith("--- ") || line.startsWith("+++ ")) &&
+      hunk === null &&
+      current !== null
+    ) {
       if (line.startsWith("--- ")) {
-        current.oldPath = line === "--- /dev/null" ? "/dev/null" : stripPrefix(line.slice(4))
+        current.oldPath =
+          line === "--- /dev/null" ? "/dev/null" : stripPrefix(line.slice(4))
       } else {
-        current.newPath = line === "+++ /dev/null" ? "/dev/null" : stripPrefix(line.slice(4))
+        current.newPath =
+          line === "+++ /dev/null" ? "/dev/null" : stripPrefix(line.slice(4))
       }
       continue
     }
@@ -158,7 +212,13 @@ export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
       }
     }
 
-    const kind = line.startsWith("-") ? "delete" : line.startsWith("+") ? "add" : line.startsWith(" ") ? "context" : null
+    const kind = line.startsWith("-")
+      ? "delete"
+      : line.startsWith("+")
+        ? "add"
+        : line.startsWith(" ")
+          ? "context"
+          : null
     if (kind === null) {
       if (line === "\\ No newline at end of file") {
         continue
@@ -197,10 +257,17 @@ export function parseUnifiedDiff(diffText: string): UnifiedDiffResult {
   closeHunk()
 
   if (files.length === 0) {
-    return { ok: false, reason: "unparseable", note: "the diff text records no file headers" }
+    return {
+      ok: false,
+      reason: "unparseable",
+      note: "the diff text records no file headers",
+    }
   }
   for (const file of files) {
-    file.path = file.newPath !== null && file.newPath !== "/dev/null" ? file.newPath : file.oldPath
+    file.path =
+      file.newPath !== null && file.newPath !== "/dev/null"
+        ? file.newPath
+        : file.oldPath
   }
   return {
     ok: true,

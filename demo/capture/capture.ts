@@ -63,6 +63,7 @@ import type { CaptureFacts } from "./src/payloads.js"
 import { seededCardJs } from "./src/worktree-seed.js"
 import * as shop from "./src/shop.js"
 import { hashOf } from "./src/receipts.js"
+import { createRealSourceHostAdapter, createRecordedSourceHostAdapter, type SourceHostAdapter } from "./src/source-host.js"
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url))
 const DB_SCRIPT = join(REPO_ROOT, "apps/control-plane/scripts/db.sh")
@@ -593,6 +594,9 @@ async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void>
   try {
     console.log(`[capture] run ${run}: resetting the Control Plane database`)
     await resetDatabase()
+    const sourceHost: SourceHostAdapter = options.agents === "real" && options.provider === "opencode-go"
+      ? createRealSourceHostAdapter()
+      : createRecordedSourceHostAdapter()
     report = await driveCapture(
       {
       run,
@@ -640,6 +644,7 @@ async function captureRun(run: 1 | 2, options: CaptureRunOptions): Promise<void>
           }),
       releaseAdapter: adapters.releaseAdapter,
       evidenceRunner: adapters.evidenceRunner,
+      sourceHost,
       },
       config,
     )

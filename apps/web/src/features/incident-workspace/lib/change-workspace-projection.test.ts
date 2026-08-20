@@ -5,7 +5,10 @@
 import { describe, expect, test } from "bun:test"
 
 import { loadReplayStoreFromDirectory } from "../../../lib/replay/load-saved-bundle-fs"
-import type { ReplayArtifact, ReplayStore } from "../../../lib/replay/replay-store"
+import type {
+  ReplayArtifact,
+  ReplayStore,
+} from "../../../lib/replay/replay-store"
 import type { ArtifactEnvelope } from "@sih/contracts/types"
 import {
   changeWorkspaceView,
@@ -17,7 +20,9 @@ const RUNS_URL = new URL("../../../../../../demo/saved-runs/", import.meta.url)
 const EVALUATION_TIME = "2026-08-16T12:00:00Z"
 
 async function fixtureStore(): Promise<ReplayStore> {
-  const result = await loadReplayStoreFromDirectory(RUNS_URL, { evaluationTime: EVALUATION_TIME })
+  const result = await loadReplayStoreFromDirectory(RUNS_URL, {
+    evaluationTime: EVALUATION_TIME,
+  })
   expect(result.ok).toBe(true)
   if (!result.ok) {
     throw new Error("fixture bundle failed verification")
@@ -28,53 +33,65 @@ async function fixtureStore(): Promise<ReplayStore> {
 describe("changeWorkspaceView over the fixture bundle", () => {
   test("incident 1: released and resolved change, honest source-host facts", async () => {
     const store = await fixtureStore()
-    const view = changeWorkspaceView(store, "inc-demo-payment-1", EVALUATION_TIME)
+    const view = changeWorkspaceView(
+      store,
+      "inc-demo-payment-1",
+      EVALUATION_TIME
+    )
     expect(view).not.toBeNull()
     if (view === null) return
 
     expect(view.incident.state).toBe("closed")
     expect(view.change?.state).toBe("Resolved")
-    expect(view.change?.candidateHash).toBe("sha256:aa2e6b171010457482f52371f4fd69d756b1a98a505c96a990f44148506ea4fa")
-    expect(view.change?.description).toBe("restore the negation in card.js's validateCard card-type clause")
-    expect(view.change?.services).toEqual(["payment"])
-    expect(view.change?.environments).toEqual(["demo"])
+    expect(view.change?.candidateHash).toBe(
+      "sha256:8044de5e18a86e69e613419f79aa82da1ba382b78a64108413497165a9dc3709"
+    )
+    expect(view.change?.description).toContain("Restore the dropped negation")
     expect(view.change?.recoveryConsumed).toBe(true)
     expect(view.change?.hypothesisId).toBe("H1")
     expect(view.change?.citedItemIds.length).toBeGreaterThan(0)
 
-    // The fixture diff has no file headers: fail closed, raw kept inspectable.
-    expect(view.diff.state).toBe("unparseable")
-    expect(view.diff.files).toEqual([])
-    expect(view.diff.rawText).toContain("includes(cardType)")
-    expect(view.diff.note).toContain("content line before any hunk")
+    // The source-host receipt carries the complete PR diff.
+    expect(view.diff.state).toBe("parsed")
+    expect(view.diff.files).toHaveLength(1)
+    expect(view.diff.additions).toBe(28)
+    expect(view.diff.deletions).toBe(28)
+    expect(view.diff.rawText).toContain(
+      "cardTypeCheck(cardNumber) !== cardType"
+    )
+    expect(view.diff.note).toBeNull()
 
-    // Run binding falls back to the journal's progressed run (no capture manifest).
+    // The issue #32 promotion is pinned by its sealed capture manifest.
     expect(view.run.runId).toBe("run-1")
-    expect(view.run.binding).toBe("journal")
+    expect(view.run.binding).toBe("manifest")
     expect(view.run.attempt).toBe(1)
     expect(view.run.attemptLimit).toBe(3)
     expect(view.run.state).toBe("completed")
     expect(view.run.outcome).toBe("verified-remediation")
     expect(view.run.durationSeconds).not.toBeNull()
-    expect(view.meta.provider).toBeNull()
-    expect(view.meta.model).toBeNull()
+    expect(view.meta.provider).not.toBeNull()
+    expect(view.meta.model).not.toBeNull()
 
     expect(view.reviewState.reviewsTotal).toBeGreaterThan(0)
     expect(view.reviewState.reviewsPassed).toBe(view.reviewState.reviewsTotal)
     expect(view.reviewState.failedIds).toEqual([])
     expect(view.reviewState.releaseGate?.verdict).toBe("pass")
 
-    // Default record is the source-host receipt, with only recorded facts.
+    // Default record exposes the PR facts recorded by the source-host adapter.
     const sourceHost = view.records["source-host"]
     expect(view.defaultRecordId).toBe("source-host")
     expect(sourceHost.kind).toBe("Source-host record")
-    expect(sourceHost.status).toBe("Recorded")
-    const command = sourceHost.facts.find((fact) => fact.label === "Command")?.value
-    expect(command).toContain("create branch remediate/")
-    expect(sourceHost.facts.some((fact) => fact.label === "PR number")).toBe(true)
-    expect(sourceHost.facts.find((fact) => fact.label === "PR number")?.value).toBe("not recorded in this bundle")
-    expect(JSON.stringify(sourceHost.raw)).not.toContain("github.com")
-    expect(JSON.stringify(sourceHost.raw)).not.toContain("Merged")
+    expect(sourceHost.status).toBe("Verified")
+    expect(
+      sourceHost.facts.find((fact) => fact.label === "Repository")?.value
+    ).toBe("xddinside/sih26-payment-demo")
+    expect(
+      sourceHost.facts.find((fact) => fact.label === "Head")
+    ).toBeUndefined()
+    expect(JSON.stringify(sourceHost.raw)).toContain(
+      "github.com/xddinside/sih26-payment-demo/pull/4"
+    )
+    expect(view.sourceHost?.repository).toBe("xddinside/sih26-payment-demo")
 
     // Records registry: remediation, hypothesis, evidence, judge, synthesizer, gate, run, recovery.
     expect(view.records["remediation"]).toBeDefined()
@@ -86,14 +103,36 @@ describe("changeWorkspaceView over the fixture bundle", () => {
     expect(view.records["gate-release"]).toBeDefined()
     expect(view.records["recovery:point"]).toBeDefined()
     expect(view.records["diff-raw"]).toBeDefined()
-    expect(view.records["file:0"]).toBeUndefined()
-    const evidenceIds = Object.keys(view.records).filter((id) => id.startsWith("evidence:"))
+    expect(view.records["file:0"]).toBeDefined()
+    expect(view.records["check:R1"]).toBeDefined()
+    expect(view.records["check:T1"]).toBeDefined()
+    expect(view.records["policy"]).toBeDefined()
+    expect(view.records["policy"].status).toBe("approval-required")
+    expect(view.records["policy"].summary).toContain(
+      "outside autonomous window"
+    )
+    expect(view.records["audit:index"]).toBeDefined()
+    expect(view.records["audit:index"].summary).toContain("events")
+    expect(view.records["audit:241"].kind).toBe("Audit event")
+    expect(view.records["audit:242"].status).toBe("granted")
+    expect(view.records["audit:243"].status).toBe("Human action")
+    expect(view.checks.length).toBe(
+      view.reviewState.reviewsTotal + view.reviewState.testsTotal
+    )
+    const evidenceIds = Object.keys(view.records).filter((id) =>
+      id.startsWith("evidence:")
+    )
     expect(evidenceIds.length).toBeGreaterThan(0)
-    const participantIds = Object.keys(view.records).filter((id) => id.startsWith("participant:"))
+    const participantIds = Object.keys(view.records).filter((id) =>
+      id.startsWith("participant:")
+    )
     expect(participantIds.length).toBeGreaterThan(0)
 
     // Navigator lists both saved Incidents with their latest outcomes.
-    expect(view.navigator.map((row) => row.incidentId)).toEqual(["inc-demo-payment-1", "inc-demo-payment-2"])
+    expect(view.navigator.map((row) => row.incidentId)).toEqual([
+      "inc-demo-payment-1",
+      "inc-demo-payment-2",
+    ])
     expect(view.navigator[0].state).toBe("closed")
     expect(view.navigator[1].latestOutcome).toContain("verification-failed")
     expect(view.navigator[1].signalName).not.toBeNull()
@@ -101,29 +140,41 @@ describe("changeWorkspaceView over the fixture bundle", () => {
 
   test("incident 2: blocked change with failed reviews and no Release Gate", async () => {
     const store = await fixtureStore()
-    const view = changeWorkspaceView(store, "inc-demo-payment-2", EVALUATION_TIME)
+    const view = changeWorkspaceView(
+      store,
+      "inc-demo-payment-2",
+      EVALUATION_TIME
+    )
     expect(view).not.toBeNull()
     if (view === null) return
 
     expect(view.incident.state).toBe("open")
     expect(view.change?.state).toBe("Blocked")
-    expect(view.change?.candidateHash).toBe("sha256:bb8885230cf3e6c20457d16b30585fa33e786c04463681fc7f92b617296e63c3")
+    expect(view.change?.candidateHash).toBe(
+      "sha256:9c8a2069c9137ba12eeafb6397467e577b54a015b9ed03334c8f0df0317f084f"
+    )
     expect(view.change?.recoveryConsumed).toBe(false)
-    expect(view.diff.state).toBe("unparseable")
-    expect(view.reviewState.failedIds).toContain("T5")
-    expect(view.reviewState.failedIds.length).toBeGreaterThan(0)
+    expect(view.diff.state).toBe("parsed")
+    expect(view.reviewState.testsTotal).toBe(0)
     expect(view.reviewState.releaseGate).toBeNull()
     expect(view.records["gate-release"]).toBeUndefined()
-    expect(view.records["source-host"].status).toBe("Recorded")
-    const command = view.records["source-host"].facts.find((fact) => fact.label === "Command")?.value
-    expect(command).toContain("msw1yy25")
+    expect(view.records["source-host"].status).toBe("Not recorded")
+    expect(view.sourceHost).toBeNull()
+    expect(view.records["source-host"].facts).toEqual([])
     expect(view.run.state).toBe("failed")
     expect(view.run.failureReason).toBe("verification-failed")
+    expect(view.records["policy"].status).toBe("No action decision")
+    expect(view.records["policy"].summary).toContain(
+      "stopped before an execution-time policy decision"
+    )
+    expect(view.records["audit:index"]).toBeDefined()
   })
 
   test("unknown Incident projects to null", async () => {
     const store = await fixtureStore()
-    expect(changeWorkspaceView(store, "inc-unknown", EVALUATION_TIME)).toBeNull()
+    expect(
+      changeWorkspaceView(store, "inc-unknown", EVALUATION_TIME)
+    ).toBeNull()
   })
 })
 
@@ -185,15 +236,29 @@ describe("deriveChangeState", () => {
     incidentClosed: true,
   }
   test("walks the full ladder", () => {
-    expect(deriveChangeState({ ...base, hasRemediation: false })).toBe("Not prepared")
-    expect(deriveChangeState({ ...base, verificationVerdict: null })).toBe("Prepared")
-    expect(deriveChangeState({ ...base, verificationVerdict: "fail" })).toBe("Blocked")
-    expect(deriveChangeState({ ...base, releaseGate: { verdict: "fail" } })).toBe("Verified")
+    expect(deriveChangeState({ ...base, hasRemediation: false })).toBe(
+      "Not prepared"
+    )
+    expect(deriveChangeState({ ...base, verificationVerdict: null })).toBe(
+      "Prepared"
+    )
+    expect(deriveChangeState({ ...base, verificationVerdict: "fail" })).toBe(
+      "Blocked"
+    )
+    expect(
+      deriveChangeState({ ...base, releaseGate: { verdict: "fail" } })
+    ).toBe("Verified")
     expect(deriveChangeState({ ...base, releaseGate: null })).toBe("Verified")
-    expect(deriveChangeState({ ...base, releaseSucceeded: false })).toBe("Approved for Release")
-    expect(deriveChangeState({ ...base, watchConfirmed: false })).toBe("Released")
+    expect(deriveChangeState({ ...base, releaseSucceeded: false })).toBe(
+      "Approved for Release"
+    )
+    expect(deriveChangeState({ ...base, watchConfirmed: false })).toBe(
+      "Released"
+    )
     expect(deriveChangeState(base)).toBe("Resolved")
-    expect(deriveChangeState({ ...base, incidentClosed: false })).toBe("Released")
+    expect(deriveChangeState({ ...base, incidentClosed: false })).toBe(
+      "Released"
+    )
   })
 })
 
@@ -201,22 +266,36 @@ describe("deriveChangeState", () => {
 // Synthetic store helpers
 // ---------------------------------------------------------------------------
 
-const runTransitionEvent = (from: RunState | null, to: RunState, runId: string, sequence: number) => ({
-  to,
-  from,
-  type: "run_transition",
-  actor: { id: "cp-1", kind: "control-plane" },
-  run_id: runId,
-  attempt: 1,
-  sequence,
-  incident_id: "inc-x",
-  recorded_at: "2026-08-16T20:00:00.000Z",
-  policy_version: "policy:v1",
-  idempotency_key: `run-test-${sequence}`,
-  expected_run_version: 1,
-}) as const
+const runTransitionEvent = (
+  from: RunState | null,
+  to: RunState,
+  runId: string,
+  sequence: number
+) =>
+  ({
+    to,
+    from,
+    type: "run_transition",
+    actor: { id: "cp-1", kind: "control-plane" },
+    run_id: runId,
+    attempt: 1,
+    sequence,
+    incident_id: "inc-x",
+    recorded_at: "2026-08-16T20:00:00.000Z",
+    policy_version: "policy:v1",
+    idempotency_key: `run-test-${sequence}`,
+    expected_run_version: 1,
+  }) as const
 
-type RunState = "queued" | "running" | "completed" | "failed" | "paused" | "awaiting-human" | "interrupted" | "cancelled"
+type RunState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "paused"
+  | "awaiting-human"
+  | "interrupted"
+  | "cancelled"
 
 function minimalStore(options: {
   manifestRuns: { incident_id: string; run_id: string; attempt: number }[]
@@ -254,16 +333,23 @@ function minimalStore(options: {
           reasoning: "medium",
           pi_agent_core_version: "1.0",
           pi_ai_version: "1.0",
-          skill_tree_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          skill_tree_digest:
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
           tool_catalog_revision: "1",
           prompt_revision: "1",
           policy_revision: "1",
           perspectives: [],
           seeds: [],
-          budgets: { model_turns: 1, non_terminal_tool_calls: 1, session_wall_clock_ms: 1, run_wall_clock_ms: 1 },
+          budgets: {
+            model_turns: 1,
+            non_terminal_tool_calls: 1,
+            session_wall_clock_ms: 1,
+            run_wall_clock_ms: 1,
+          },
           schema_versions: {},
           role_records: [],
-          manifest_digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          manifest_digest:
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
           sealed_at: "2026-08-16T20:20:41.690Z",
         } as unknown,
       } as unknown as ArtifactEnvelope,
